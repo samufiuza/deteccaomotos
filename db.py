@@ -31,6 +31,20 @@ ALTER TABLE deteccoes ADD COLUMN IF NOT EXISTS nearest_distance FLOAT;
 """
 
 
+CREATE_EVENTOS_SQL = """
+CREATE TABLE IF NOT EXISTS eventos (
+    id SERIAL PRIMARY KEY,
+    track_id INTEGER,
+    event_type VARCHAR(50) NOT NULL,
+    timestamp TIMESTAMP NOT NULL,
+    severity VARCHAR(10),
+    speed_estimated FLOAT,
+    distance FLOAT,
+    zona VARCHAR(50)
+);
+"""
+
+
 def conectar():
     """Abre e retorna uma conexão com o banco. Lança exceção se falhar."""
     if not DB_CONFIG["password"]:
@@ -42,10 +56,35 @@ def conectar():
 
 
 def garantir_schema(conn):
-    """Cria a tabela de detecções caso não exista, e adiciona colunas novas se faltarem."""
+    """Cria as tabelas caso não existam, e adiciona colunas novas se faltarem."""
     with conn.cursor() as cur:
         cur.execute(CREATE_DETECCOES_SQL)
         cur.execute(ALTER_DETECCOES_SQL)
+        cur.execute(CREATE_EVENTOS_SQL)
+    conn.commit()
+
+
+def salvar_eventos(conn, eventos):
+    """
+    Insere um lote de eventos de risco.
+
+    `eventos` é uma lista de dicts:
+    {"track_id": int, "event_type": str, "timestamp": datetime,
+     "severity": str|None, "speed_estimated": float|None,
+     "distance": float|None, "zona": str|None}
+    """
+    if not eventos:
+        return
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO eventos
+                (track_id, event_type, timestamp, severity, speed_estimated, distance, zona)
+            VALUES (%(track_id)s, %(event_type)s, %(timestamp)s, %(severity)s,
+                    %(speed_estimated)s, %(distance)s, %(zona)s)
+            """,
+            eventos,
+        )
     conn.commit()
 
 

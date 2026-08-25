@@ -1,4 +1,4 @@
-# Pipeline consolidado — Detecção + Tracking + Velocidade + Distância
+# Pipeline consolidado — Detecção + Tracking + Velocidade + Distância + Zona de Risco
 
 Substitui `detectio_motos.py`, `detection.py` e `main.py` do projeto original.
 
@@ -8,9 +8,11 @@ Substitui `detectio_motos.py`, `detection.py` e `main.py` do projeto original.
 config.py       - configurações (modelo, classes, banco via env vars)
 calibration.py  - conversão pixel -> metros a partir de 2 pontos de referência
 detector.py     - detecção + tracking (YOLO + ByteTrack nativo do Ultralytics)
-risk.py         - velocidade e distância (implementados); zona/score (stubs, próxima etapa)
-db.py           - conexão e persistência no PostgreSQL
+risk.py         - velocidade, distância e zona de risco (implementados); score (stub, próxima etapa)
+state.py        - histórico de posições e estado de zona por track_id (sem depender de YOLO/banco)
+db.py           - conexão e persistência no PostgreSQL (detecções + eventos)
 main.py         - orquestração / ponto de entrada
+zonas_exemplo.json - exemplo de configuração de zonas de risco
 ```
 
 ## Instalação
@@ -48,6 +50,9 @@ python main.py --source moto_teste.jpg
 # webcam
 python main.py --source 0
 
+# com zonas de risco (ver zonas_exemplo.json — ajuste as coordenadas pro seu vídeo)
+python main.py --source vídeo_moto.mp4 --zonas zonas_exemplo.json
+
 # sem abrir janela (ex.: rodando em servidor)
 python main.py --source vídeo_moto.mp4 --no-display
 ```
@@ -64,6 +69,16 @@ python main.py --source vídeo_moto.mp4 --no-display
 A escala assume que a câmera tem pouca inclinação/perspectiva — é uma aproximação
 que deve ser explicitada como limitação no TCC.
 
+### Como configurar zonas de risco
+
+1. Copie `zonas_exemplo.json` e edite as coordenadas (em pixels, do frame do vídeo).
+2. Cada zona é um polígono: lista de pontos `[x, y]`, na ordem (não precisa fechar
+   o polígono repetindo o primeiro ponto no fim).
+3. Passe o arquivo com `--zonas caminho/para/zonas.json`.
+4. Quando um veículo rastreado entra em uma zona pela primeira vez (ou reentra
+   depois de sair), um evento `entrada_zona_risco` é salvo na tabela `eventos`,
+   já com a velocidade e distância estimadas naquele momento.
+
 ## O que muda em relação aos scripts antigos
 
 - Um único módulo, sem duplicação de lógica entre os três arquivos anteriores.
@@ -71,18 +86,18 @@ que deve ser explicitada como limitação no TCC.
 - Tracking usa o ByteTrack nativo do Ultralytics (`tracker="bytetrack.yaml"`) em vez de reimplementar contagem manual de IDs.
 - Cada detecção é salva no banco com posição (x, y), velocidade estimada e distância até o veículo mais próximo no frame.
 - Velocidade e distância só são calculadas com calibração; sem ela, o sistema avisa e segue funcionando (distância cai para pixels, velocidade fica `None`).
-- `risk.py` já testado isoladamente (ver seção de testes abaixo) — a lógica matemática está validada antes de depender do YOLO/vídeo real.
+- Zonas de risco são configuráveis por JSON, sem precisar mexer no código; entrada em zona vira evento no banco.
+- A lógica de histórico/zona vive em `state.py`, separada de `main.py`, para não depender de YOLO nem do banco — dá pra testar isoladamente.
 
-## Testes rápidos da lógica (sem precisar de vídeo/YOLO/banco)
+## Testes automatizados
 
 ```bash
-python3 -c "
-from calibration import calcular_escala
-from risk import calcular_velocidade, calcular_distancia
-# ver exemplo de uso no histórico do projeto
-"
+pip install pytest
+python -m pytest tests/ -v
 ```
+
+31 testes cobrindo calibração, velocidade, distância, point-in-polygon (inclusive polígono côncavo) e as transições de zona (entrada, permanência sem duplicar evento, saída, reentrada, múltiplos veículos simultâneos). Veja `TESTES.md` para o guia completo, incluindo os testes manuais que precisam do YOLO/vídeo real.
 
 ## Próxima etapa
 
-Zonas de risco (`checar_zona`) e score (`calcular_score`) em `risk.py` — ainda stubs.
+Score de risco (`calcular_score` em `risk.py`) — ainda stub, combinando os eventos já detectados (velocidade elevada, proximidade perigosa, zona de risco) em uma pontuação 0–100.

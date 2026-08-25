@@ -18,21 +18,33 @@ Antes de rodar, defina as variáveis de ambiente do banco (ver config.py):
 """
 
 import argparse
+import json
 import os
 from collections import defaultdict, deque
 from datetime import datetime
 
 import cv2
+import numpy as np
 
 import db
 from detector import carregar_modelo, detectar_e_rastrear
 from calibration import parse_calibracao
-from risk import calcular_velocidade, calcular_distancia
+from state import atualizar_historico_e_calcular, atualizar_zonas
 from config import PRIMARY_CLASS_ID, HISTORICO_MAX_POSICOES
 
 
 def is_image_file(path):
     return isinstance(path, str) and path.lower().endswith((".jpg", ".jpeg", ".png"))
+
+
+def carregar_zonas(caminho_json):
+    """Lê o arquivo de zonas (ver zonas_exemplo.json). Retorna [] se não informado."""
+    if not caminho_json:
+        return []
+    with open(caminho_json, "r", encoding="utf-8") as f:
+        dados = json.load(f)
+    # json guarda listas de listas; checar_zona espera tuplas, mas listas também funcionam
+    return dados["zonas"]
 
 
 def parse_args():
@@ -61,6 +73,10 @@ def parse_args():
         "--calib-dist", default=None,
         help="Distância real, em metros, entre os pontos --calib-p1 e --calib-p2"
     )
+    parser.add_argument(
+        "--zonas", default=None,
+        help="Caminho para o JSON de zonas de risco (ver zonas_exemplo.json)"
+    )
     args = parser.parse_args()
 
     # "0" vindo da linha de comando deve virar webcam (int), não string
@@ -69,13 +85,25 @@ def parse_args():
     if escala is None:
         print("⚠️  Sem calibração (--calib-p1/--calib-p2/--calib-dist não informados). "
               "Velocidade não será calculada; distância ficará em pixels.")
-    return source, args.no_display, args.batch_size, escala
+    zonas = carregar_zonas(args.zonas)
+    if not zonas:
+        print("⚠️  Sem zonas de risco configuradas (--zonas não informado).")
+    return source, args.no_display, args.batch_size, escala, zonas
 
 
-def desenhar(frame, objetos, velocidades, total_motos):
+def desenhar(frame, objetos, velocidades, zonas_atuais, zonas, total_motos):
+    # zonas de risco (desenhadas primeiro, ficam "atrás" dos veículos)
+    for zona in zonas:
+        pts = np.array([(int(x), int(y)) for x, y in zona["poligono"]])
+        cv2.polylines(frame, [pts], True, (0, 0, 255), 2)
+        cv2.putText(frame, zona["nome"], tuple(pts[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
     for obj in objetos:
         x1, y1, x2, y2 = map(int, obj["bbox"])
-        cor = (0, 255, 0) if obj["vehicle_type"] == "motorcycle" else (255, 180, 0)
+        em_zona = zonas_atuais.get(obj["track_id"]) is not None
+        cor = (0, 0, 255) if em_zona else (
+            (0, 255, 0) if obj["vehicle_type"] == "motorcycle" else (255, 180, 0)
+        )
         cv2.rectangle(frame, (x1, y1), (x2, y2), cor, 2)
         label = f'{obj["vehicle_type"]} {obj["confidence"]:.2f}'
         if obj["track_id"] is not None:
@@ -90,49 +118,17 @@ def desenhar(frame, objetos, velocidades, total_motos):
     return frame
 
 
-def atualizar_historico_e_calcular(objetos, historico, escala, ts):
-    """
-    Atualiza o histórico de posições por track_id e calcula, para cada
-    objeto: velocidade estimada e distância até o veículo mais próximo no
-    mesmo frame.
-
-    Retorna (velocidades: {track_id: km/h|None}, distancias: {track_id: metros|pixels|None})
-    """
-    # 1. Atualizar histórico
-    for obj in objetos:
-        if obj["track_id"] is None:
-            continue
-        historico[obj["track_id"]].append({"x": obj["x"], "y": obj["y"], "timestamp": ts})
-
-    # 2. Velocidade por track_id
-    velocidades = {}
-    for obj in objetos:
-        tid = obj["track_id"]
-        if tid is None:
-            velocidades[tid] = None
-            continue
-        velocidades[tid] = calcular_velocidade(list(historico[tid]), escala)
-
-    # 3. Distância até o objeto mais próximo, no mesmo frame
-    distancias = {}
-    for i, obj_a in enumerate(objetos):
-        menor = None
-        for j, obj_b in enumerate(objetos):
-            if i == j:
-                continue
-            d = calcular_distancia(obj_a, obj_b, escala)
-            if menor is None or d < menor:
-                menor = d
-        distancias[obj_a["track_id"]] = menor
-
-    return velocidades, distancias
-
-
-def processar_frame(frame, model, motos_rastreadas, historico, escala):
+def processar_frame(frame, model, motos_rastreadas, historico, escala, zonas, zona_por_track):
     objetos, res = detectar_e_rastrear(frame, model)
 
     ts = datetime.now()
     velocidades, distancias = atualizar_historico_e_calcular(objetos, historico, escala, ts)
+    zonas_atuais, entradas = atualizar_zonas(objetos, zonas, zona_por_track)
+
+    # completa velocidade nos eventos de entrada em zona, agora que já a calculamos
+    for evento in entradas:
+        evento["speed_estimated"] = velocidades.get(evento["track_id"])
+        evento["distance"] = distancias.get(evento["track_id"])
 
     registros = [
         {
@@ -152,11 +148,11 @@ def processar_frame(frame, model, motos_rastreadas, historico, escala):
         if obj["vehicle_type"] == "motorcycle" and obj["track_id"] is not None:
             motos_rastreadas.add(obj["track_id"])
 
-    return objetos, registros, velocidades
+    return objetos, registros, velocidades, zonas_atuais, entradas
 
 
 def main():
-    source, no_display, batch_size, escala = parse_args()
+    source, no_display, batch_size, escala, zonas = parse_args()
 
     conn = db.conectar()
     db.garantir_schema(conn)
@@ -166,7 +162,9 @@ def main():
 
     motos_rastreadas = set()
     buffer_registros = []
+    buffer_eventos = []
     historico = defaultdict(lambda: deque(maxlen=HISTORICO_MAX_POSICOES))
+    zona_por_track = {}
 
     try:
         if is_image_file(source):
@@ -174,11 +172,12 @@ def main():
             if frame is None:
                 print("❌ Erro: imagem não encontrada.")
                 return
-            objetos, registros, velocidades = processar_frame(
-                frame, model, motos_rastreadas, historico, escala
+            objetos, registros, velocidades, zonas_atuais, entradas = processar_frame(
+                frame, model, motos_rastreadas, historico, escala, zonas, zona_por_track
             )
             buffer_registros.extend(registros)
-            frame = desenhar(frame, objetos, velocidades, len(motos_rastreadas))
+            buffer_eventos.extend(entradas)
+            frame = desenhar(frame, objetos, velocidades, zonas_atuais, zonas, len(motos_rastreadas))
             if not no_display:
                 cv2.imshow("Detecção - Imagem", frame)
                 cv2.waitKey(0)
@@ -195,14 +194,15 @@ def main():
                 if not ret:
                     break
 
-                objetos, registros, velocidades = processar_frame(
-                    frame, model, motos_rastreadas, historico, escala
+                objetos, registros, velocidades, zonas_atuais, entradas = processar_frame(
+                    frame, model, motos_rastreadas, historico, escala, zonas, zona_por_track
                 )
                 buffer_registros.extend(registros)
+                buffer_eventos.extend(entradas)
                 frame_count += 1
 
                 if not no_display:
-                    frame = desenhar(frame, objetos, velocidades, len(motos_rastreadas))
+                    frame = desenhar(frame, objetos, velocidades, zonas_atuais, zonas, len(motos_rastreadas))
                     cv2.imshow("Detecção - Vídeo/Webcam", frame)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
@@ -210,6 +210,9 @@ def main():
                 if len(buffer_registros) >= batch_size:
                     db.salvar_deteccoes(conn, str(source), buffer_registros)
                     buffer_registros = []
+                if buffer_eventos:
+                    db.salvar_eventos(conn, buffer_eventos)
+                    buffer_eventos = []
 
             cap.release()
             if not no_display:
@@ -218,6 +221,8 @@ def main():
         # flush final
         if buffer_registros:
             db.salvar_deteccoes(conn, str(source), buffer_registros)
+        if buffer_eventos:
+            db.salvar_eventos(conn, buffer_eventos)
 
         print(f"💾 Total de motos únicas rastreadas: {len(motos_rastreadas)}")
 

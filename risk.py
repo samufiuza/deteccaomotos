@@ -59,13 +59,47 @@ def calcular_distancia(pos_a, pos_b, escala_px_para_metros=None):
 
 def checar_zona(x, y, zonas):
     """
-    zonas: lista de polígonos (cada um uma lista de pontos (x, y)) representando
-    zonas de risco definidas na configuração do projeto.
+    zonas: lista de dicts {"nome": str, "poligono": [(x1,y1), (x2,y2), ...]}
+        representando as zonas de risco definidas para o vídeo (ver config/zonas.json).
 
-    Retorna o nome da zona em que o ponto está, ou None.
+    Retorna o nome da primeira zona em que o ponto (x, y) está, ou None se
+    não estiver em nenhuma. Se zonas se sobrepuserem, a ordem da lista decide
+    a prioridade (a primeira que contiver o ponto vence).
     """
-    # TODO: implementar na etapa "Zona de risco" do MVP (point-in-polygon)
+    for zona in zonas:
+        if _ponto_dentro_poligono(x, y, zona["poligono"]):
+            return zona["nome"]
     return None
+
+
+def _ponto_dentro_poligono(x, y, poligono):
+    """
+    Algoritmo ray casting: conta quantas vezes uma semirreta horizontal a
+    partir do ponto cruza as arestas do polígono. Número ímpar de cruzamentos
+    = ponto dentro.
+
+    poligono: lista de (x, y) em ordem (sentido horário ou anti-horário,
+        não importa). Precisa de pelo menos 3 pontos.
+
+    Nota: pontos exatamente sobre uma aresta têm comportamento indefinido
+    (podem contar como dentro ou fora, dependendo do arredondamento) — não é
+    um problema prático aqui, já que estamos testando o centro de bounding
+    boxes, não pontos desenhados manualmente sobre a linha da zona.
+    """
+    dentro = False
+    n = len(poligono)
+    x1, y1 = poligono[0]
+    for i in range(1, n + 1):
+        x2, y2 = poligono[i % n]
+        if y > min(y1, y2):
+            if y <= max(y1, y2):
+                if x <= max(x1, x2):
+                    if y1 != y2:
+                        x_intersecao = (y - y1) * (x2 - x1) / (y2 - y1) + x1
+                    if x1 == x2 or x <= x_intersecao:
+                        dentro = not dentro
+        x1, y1 = x2, y2
+    return dentro
 
 
 def calcular_score(eventos):

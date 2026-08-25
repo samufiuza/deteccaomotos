@@ -1,0 +1,13 @@
+{
+  "_comentario": "Coordenadas em pixels, do frame do vídeo usado. Ajuste para o seu vídeo/câmera antes de rodar. Ordem dos pontos não importa (sentido horário ou anti-horário), mas precisa ter pelo menos 3 pontos por zona.",
+  "zonas": [
+    {
+      "nome": "cruzamento",
+      "poligono": [[200, 300], [500, 300], [500, 450], [200, 450]]
+    },
+    {
+      "nome": "faixa_pedestre",
+      "poligono": [[50, 500], [600, 500], [600, 550], [50, 550]]
+    }
+  ]
+}
