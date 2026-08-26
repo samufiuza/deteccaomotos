@@ -1,11 +1,15 @@
 """
 Análise de risco.
 
-Velocidade e distância: implementadas (etapa atual).
-Zona de risco e score: ainda stubs, para as próximas etapas.
+Velocidade, distância e zona: implementadas.
+Score: implementado (combina os eventos ativos no frame atual).
+"mudanca_brusca" e "aproximacao_rapida" ainda não são detectados — exigem
+análise de tendência ao longo do tempo, não só do frame atual.
 """
 
 import math
+
+from config import NIVEIS_RISCO
 
 
 def calcular_velocidade(historico_posicoes, escala_px_para_metros=None, janela=5):
@@ -102,12 +106,59 @@ def _ponto_dentro_poligono(x, y, poligono):
     return dentro
 
 
-def calcular_score(eventos):
+def detectar_eventos_ativos(velocidade, distancia, zona, limiar_velocidade, limiar_distancia):
     """
-    eventos: lista de strings com os tipos de evento detectados para um track_id
-        (ex.: "velocidade_elevada", "proximidade_perigosa", "zona_risco").
+    Verifica, para os valores ATUAIS (de um frame) de um track_id, quais
+    condições de risco estão ativas agora.
 
-    Retorna (score: int, nivel: str) conforme a tabela de pesos definida no TCC.
+    velocidade: km/h estimado, ou None se não calibrado.
+    distancia: metros até o veículo mais próximo, ou None (se calibrado em
+        metros — se vier em pixels por falta de calibração, é ignorada aqui,
+        pois pixels não são comparáveis ao limiar em metros).
+    zona: nome da zona de risco em que o veículo está, ou None.
+
+    Retorna uma lista de strings (nomes de eventos ativos agora), entre:
+    "velocidade_elevada", "proximidade_perigosa", "zona_risco".
+
+    Nota: "mudanca_brusca" e "aproximacao_rapida" não são detectados aqui —
+    exigem histórico/tendência, não só o frame atual (próxima iteração).
     """
-    # TODO: implementar na etapa "Score" do MVP
-    return 0, "indefinido"
+    eventos = []
+
+    if velocidade is not None and velocidade >= limiar_velocidade:
+        eventos.append("velocidade_elevada")
+
+    if distancia is not None and distancia <= limiar_distancia:
+        eventos.append("proximidade_perigosa")
+
+    if zona is not None:
+        eventos.append("zona_risco")
+
+    return eventos
+
+
+def calcular_score(eventos_ativos, pesos):
+    """
+    eventos_ativos: lista de strings com os tipos de evento ativos AGORA
+        para um track_id (ver detectar_eventos_ativos). Duplicatas são
+        ignoradas — cada tipo de evento conta seu peso uma única vez.
+    pesos: dict {tipo_evento: peso_inteiro} (ver config.PESOS_RISCO).
+
+    Retorna (score: int 0-100, nivel: str "baixo"|"medio"|"alto").
+
+    A pontuação é a soma dos pesos dos tipos de evento distintos presentes,
+    limitada a 100. É um parâmetro experimental do projeto, não uma verdade
+    absoluta — os pesos devem ser justificados/calibrados com os testes reais
+    (ver seção de avaliação experimental do TCC).
+    """
+    tipos_unicos = set(eventos_ativos)
+    score = sum(pesos.get(tipo, 0) for tipo in tipos_unicos)
+    score = min(score, 100)
+
+    nivel = "baixo"
+    for minimo, maximo, nome in NIVEIS_RISCO:
+        if minimo <= score <= maximo:
+            nivel = nome
+            break
+
+    return score, nivel

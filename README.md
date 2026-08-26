@@ -1,16 +1,16 @@
-# Pipeline consolidado — Detecção + Tracking + Velocidade + Distância + Zona de Risco
+# Pipeline consolidado — Detecção + Tracking + Velocidade + Distância + Zona de Risco + Score
 
 Substitui `detectio_motos.py`, `detection.py` e `main.py` do projeto original.
 
 ## Estrutura
 
 ```
-config.py       - configurações (modelo, classes, banco via env vars)
+config.py       - configurações (modelo, classes, banco, limiares e pesos do score via env vars)
 calibration.py  - conversão pixel -> metros a partir de 2 pontos de referência
 detector.py     - detecção + tracking (YOLO + ByteTrack nativo do Ultralytics)
-risk.py         - velocidade, distância e zona de risco (implementados); score (stub, próxima etapa)
-state.py        - histórico de posições e estado de zona por track_id (sem depender de YOLO/banco)
-db.py           - conexão e persistência no PostgreSQL (detecções + eventos)
+risk.py         - velocidade, distância, zona de risco e score (todos implementados)
+state.py        - histórico de posições, zonas e score por track_id (sem depender de YOLO/banco)
+db.py           - conexão e persistência no PostgreSQL (detecções + eventos + análise de risco)
 main.py         - orquestração / ponto de entrada
 zonas_exemplo.json - exemplo de configuração de zonas de risco
 ```
@@ -87,7 +87,19 @@ que deve ser explicitada como limitação no TCC.
 - Cada detecção é salva no banco com posição (x, y), velocidade estimada e distância até o veículo mais próximo no frame.
 - Velocidade e distância só são calculadas com calibração; sem ela, o sistema avisa e segue funcionando (distância cai para pixels, velocidade fica `None`).
 - Zonas de risco são configuráveis por JSON, sem precisar mexer no código; entrada em zona vira evento no banco.
-- A lógica de histórico/zona vive em `state.py`, separada de `main.py`, para não depender de YOLO nem do banco — dá pra testar isoladamente.
+- Score de risco (0-100, baixo/médio/alto) combina velocidade elevada, proximidade perigosa e zona de risco, salvo por track_id na tabela `analise_risco`. Cada veículo é desenhado na tela com cor por nível de risco (verde/laranja/vermelho).
+- A lógica de histórico/zona/score vive em `state.py`, separada de `main.py`, para não depender de YOLO nem do banco — dá pra testar isoladamente.
+
+## Limiares e pesos do score (ajustáveis)
+
+```bash
+export LIMIAR_VELOCIDADE_KMH=60       # acima disso -> evento "velocidade_elevada"
+export LIMIAR_DISTANCIA_MINIMA_M=2.0  # abaixo disso -> evento "proximidade_perigosa"
+```
+
+Pesos (em `config.PESOS_RISCO`): velocidade_elevada=30, proximidade_perigosa=25, zona_risco=15. Faixas: 0-29 baixo, 30-59 médio, 60-100 alto. São parâmetros experimentais — devem ser justificados/calibrados com os testes reais (seção de avaliação do TCC), não tratados como valores definitivos.
+
+**Ainda não implementado nesta etapa:** `mudanca_brusca` (variação de trajetória) e `aproximacao_rapida` (redução rápida de distância) — exigem analisar tendência ao longo do tempo, não só o frame atual. Ficam para uma próxima iteração.
 
 ## Testes automatizados
 
@@ -96,8 +108,8 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-31 testes cobrindo calibração, velocidade, distância, point-in-polygon (inclusive polígono côncavo) e as transições de zona (entrada, permanência sem duplicar evento, saída, reentrada, múltiplos veículos simultâneos). Veja `TESTES.md` para o guia completo, incluindo os testes manuais que precisam do YOLO/vídeo real.
+57 testes cobrindo calibração, velocidade, distância, point-in-polygon, transições de zona, detecção de eventos de risco e cálculo/classificação do score (inclusive as fronteiras exatas 29/30 e 59/60). Veja `TESTES.md` para o guia completo, incluindo os testes manuais que precisam do YOLO/vídeo real.
 
 ## Próxima etapa
 
-Score de risco (`calcular_score` em `risk.py`) — ainda stub, combinando os eventos já detectados (velocidade elevada, proximidade perigosa, zona de risco) em uma pontuação 0–100.
+Avaliar `mudanca_brusca` e `aproximacao_rapida` (exigem histórico de tendência), ou seguir direto para o dashboard, consultando as tabelas já populadas (`deteccoes`, `eventos`, `analise_risco`).

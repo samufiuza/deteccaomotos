@@ -48,3 +48,28 @@ PRIMARY_CLASS_ID = 3  # motorcycle
 # (ver risk.calcular_velocidade). Também define quanto tempo "esquecemos"
 # um objeto que sumiu do vídeo (oclusão, saída de cena).
 HISTORICO_MAX_POSICOES = 15
+
+# ==== SCORE DE RISCO ====
+# Limiares que definem quando uma condição é considerada de risco.
+# Valores experimentais — devem ser justificados/ajustados no TCC a partir
+# dos testes com vídeos reais (ver seção de avaliação experimental).
+LIMIAR_VELOCIDADE_KMH = float(os.environ.get("LIMIAR_VELOCIDADE_KMH", 60))
+LIMIAR_DISTANCIA_MINIMA_M = float(os.environ.get("LIMIAR_DISTANCIA_MINIMA_M", 2.0))
+
+# Pesos por tipo de evento ativo (somados para compor o score, máx. 100).
+# Espelha a tabela conceitual do prompt mestre do TCC (seção 10).
+# "mudanca_brusca" e "aproximacao_rapida" ainda não são detectados nesta
+# etapa — exigem análise de tendência ao longo do tempo, não só do frame
+# atual — ficam para uma próxima iteração.
+PESOS_RISCO = {
+    "velocidade_elevada": 30,
+    "proximidade_perigosa": 25,
+    "zona_risco": 15,
+}
+
+# Faixas de classificação do score (0-100)
+NIVEIS_RISCO = [
+    (0, 29, "baixo"),
+    (30, 59, "medio"),
+    (60, 100, "alto"),
+]

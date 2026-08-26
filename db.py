@@ -45,6 +45,17 @@ CREATE TABLE IF NOT EXISTS eventos (
 """
 
 
+CREATE_ANALISE_RISCO_SQL = """
+CREATE TABLE IF NOT EXISTS analise_risco (
+    id SERIAL PRIMARY KEY,
+    track_id INTEGER,
+    timestamp TIMESTAMP NOT NULL,
+    risk_score INTEGER,
+    risk_level VARCHAR(10)
+);
+"""
+
+
 def conectar():
     """Abre e retorna uma conexão com o banco. Lança exceção se falhar."""
     if not DB_CONFIG["password"]:
@@ -61,6 +72,27 @@ def garantir_schema(conn):
         cur.execute(CREATE_DETECCOES_SQL)
         cur.execute(ALTER_DETECCOES_SQL)
         cur.execute(CREATE_EVENTOS_SQL)
+        cur.execute(CREATE_ANALISE_RISCO_SQL)
+    conn.commit()
+
+
+def salvar_analises_risco(conn, analises):
+    """
+    Insere um lote de análises de risco.
+
+    `analises` é uma lista de dicts:
+    {"track_id": int, "timestamp": datetime, "risk_score": int, "risk_level": str}
+    """
+    if not analises:
+        return
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO analise_risco (track_id, timestamp, risk_score, risk_level)
+            VALUES (%(track_id)s, %(timestamp)s, %(risk_score)s, %(risk_level)s)
+            """,
+            analises,
+        )
     conn.commit()
 
 
