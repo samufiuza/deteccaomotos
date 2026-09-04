@@ -73,3 +73,9 @@ NIVEIS_RISCO = [
     (30, 59, "medio"),
     (60, 100, "alto"),
 ]
+
+# Quantos frames um track_id de moto precisa aparecer para ser contado como
+# "moto confirmada" (não só uma detecção isolada/ruído). Descoberto empiricamente
+# ao rodar com vídeo real: sem esse filtro, IDs que aparecem em 1 frame só
+# (falso positivo pontual ou troca de ID) inflam a contagem total de motos.
+MIN_FRAMES_PRESENCA_MOTO = int(os.environ.get("MIN_FRAMES_PRESENCA_MOTO", 3))

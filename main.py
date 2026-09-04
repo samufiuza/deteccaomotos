@@ -29,8 +29,8 @@ import numpy as np
 import db
 from detector import carregar_modelo, detectar_e_rastrear
 from calibration import parse_calibracao
-from state import atualizar_historico_e_calcular, atualizar_zonas, calcular_riscos
-from config import PRIMARY_CLASS_ID, HISTORICO_MAX_POSICOES
+from state import atualizar_historico_e_calcular, atualizar_zonas, calcular_riscos, atualizar_presenca_motos
+from config import PRIMARY_CLASS_ID, HISTORICO_MAX_POSICOES, MIN_FRAMES_PRESENCA_MOTO
 
 
 def is_image_file(path):
@@ -129,7 +129,7 @@ def desenhar(frame, objetos, velocidades, zonas_atuais, zonas, analises, total_m
     return frame
 
 
-def processar_frame(frame, model, motos_rastreadas, historico, escala, zonas, zona_por_track, estado_condicoes):
+def processar_frame(frame, model, contagem_frames_motos, historico, escala, zonas, zona_por_track, estado_condicoes):
     objetos, res = detectar_e_rastrear(frame, model)
 
     ts = datetime.now()
@@ -160,11 +160,12 @@ def processar_frame(frame, model, motos_rastreadas, historico, escala, zonas, zo
         for obj in objetos
     ]
 
-    for obj in objetos:
-        if obj["vehicle_type"] == "motorcycle" and obj["track_id"] is not None:
-            motos_rastreadas.add(obj["track_id"])
+    # só conta como "moto confirmada" quem já apareceu MIN_FRAMES_PRESENCA_MOTO
+    # vezes — descoberto ao rodar com vídeo real: sem isso, ruído de 1 frame
+    # (falso positivo isolado / troca de ID) infla a contagem total
+    motos_confirmadas = atualizar_presenca_motos(objetos, contagem_frames_motos, MIN_FRAMES_PRESENCA_MOTO)
 
-    return objetos, registros, velocidades, zonas_atuais, entradas, analises
+    return objetos, registros, velocidades, zonas_atuais, entradas, analises, motos_confirmadas
 
 
 def main():
@@ -176,7 +177,8 @@ def main():
 
     model = carregar_modelo()
 
-    motos_rastreadas = set()
+    contagem_frames_motos = defaultdict(int)
+    motos_confirmadas = set()
     buffer_registros = []
     buffer_eventos = []
     buffer_analises = []
@@ -190,13 +192,13 @@ def main():
             if frame is None:
                 print("❌ Erro: imagem não encontrada.")
                 return
-            objetos, registros, velocidades, zonas_atuais, entradas, analises = processar_frame(
-                frame, model, motos_rastreadas, historico, escala, zonas, zona_por_track, estado_condicoes
+            objetos, registros, velocidades, zonas_atuais, entradas, analises, motos_confirmadas = processar_frame(
+                frame, model, contagem_frames_motos, historico, escala, zonas, zona_por_track, estado_condicoes
             )
             buffer_registros.extend(registros)
             buffer_eventos.extend(entradas)
             buffer_analises.extend(analises)
-            frame = desenhar(frame, objetos, velocidades, zonas_atuais, zonas, analises, len(motos_rastreadas))
+            frame = desenhar(frame, objetos, velocidades, zonas_atuais, zonas, analises, len(motos_confirmadas))
             if not no_display:
                 cv2.imshow("Detecção - Imagem", frame)
                 cv2.waitKey(0)
@@ -213,8 +215,8 @@ def main():
                 if not ret:
                     break
 
-                objetos, registros, velocidades, zonas_atuais, entradas, analises = processar_frame(
-                    frame, model, motos_rastreadas, historico, escala, zonas, zona_por_track, estado_condicoes
+                objetos, registros, velocidades, zonas_atuais, entradas, analises, motos_confirmadas = processar_frame(
+                    frame, model, contagem_frames_motos, historico, escala, zonas, zona_por_track, estado_condicoes
                 )
                 buffer_registros.extend(registros)
                 buffer_eventos.extend(entradas)
@@ -222,7 +224,7 @@ def main():
                 frame_count += 1
 
                 if not no_display:
-                    frame = desenhar(frame, objetos, velocidades, zonas_atuais, zonas, analises, len(motos_rastreadas))
+                    frame = desenhar(frame, objetos, velocidades, zonas_atuais, zonas, analises, len(motos_confirmadas))
                     cv2.imshow("Detecção - Vídeo/Webcam", frame)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
@@ -249,7 +251,7 @@ def main():
         if buffer_analises:
             db.salvar_analises_risco(conn, buffer_analises)
 
-        print(f"💾 Total de motos únicas rastreadas: {len(motos_rastreadas)}")
+        print(f"💾 Total de motos confirmadas (>= {MIN_FRAMES_PRESENCA_MOTO} frames de presença): {len(motos_confirmadas)}")
 
     finally:
         conn.close()

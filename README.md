@@ -108,8 +108,16 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-57 testes cobrindo calibração, velocidade, distância, point-in-polygon, transições de zona, detecção de eventos de risco e cálculo/classificação do score (inclusive as fronteiras exatas 29/30 e 59/60). Veja `TESTES.md` para o guia completo, incluindo os testes manuais que precisam do YOLO/vídeo real.
+64 testes cobrindo calibração, velocidade, distância, point-in-polygon, transições de zona, detecção de eventos de risco, score (inclusive fronteiras exatas 29/30 e 59/60) e o filtro de presença mínima de motos. Veja `TESTES.md` para o guia completo, incluindo os testes manuais que precisam do YOLO/vídeo real.
+
+## Validação com vídeo real
+
+Rodado com o `vídeo_moto.mp4` e `yolov8m.pt` reais do projeto (450 frames, sem GPU):
+- **Detecção na imagem de teste:** 5/5 motos visíveis detectadas, confiança 0.78–0.91.
+- **Tracking no vídeo:** 10 `track_id` de moto surgiram ao todo, mas 3 deles apareceram em 1 frame só (ruído — falso positivo isolado ou troca de ID momentânea).
+- **Correção aplicada:** `MIN_FRAMES_PRESENCA_MOTO` (padrão 3) — só conta como moto confirmada quem aparece nesse mínimo de frames. Resultado: **7 motos confirmadas** de 10 IDs brutos, os 3 de ruído corretamente descartados.
+- **Desempenho:** ~0,44s/frame (2,3 FPS) em CPU sem GPU — considerar isso na seção de desempenho do TCC; em GPU deve ser bem mais rápido.
 
 ## Próxima etapa
 
-Avaliar `mudanca_brusca` e `aproximacao_rapida` (exigem histórico de tendência), ou seguir direto para o dashboard, consultando as tabelas já populadas (`deteccoes`, `eventos`, `analise_risco`).
+Dashboard, consultando as tabelas já populadas (`deteccoes`, `eventos`, `analise_risco`). Depois, avaliar `mudanca_brusca` e `aproximacao_rapida` (exigem histórico de tendência).

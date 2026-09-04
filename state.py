@@ -159,3 +159,25 @@ def calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado_condi
             estado_anterior[tipo_evento] = ativo_agora
 
     return analises, eventos_transicao
+
+
+def atualizar_presenca_motos(objetos, contagem_frames, min_frames):
+    """
+    Conta em quantos frames cada track_id de moto já apareceu, e retorna o
+    conjunto de IDs que já atingiram o mínimo de frames para serem
+    considerados "moto confirmada" — e não ruído (falso positivo isolado,
+    ou troca de ID que dura só 1-2 frames).
+
+    contagem_frames: dict mutável {track_id: int}, mantido entre chamadas
+        (estado do vídeo inteiro).
+    min_frames: ver config.MIN_FRAMES_PRESENCA_MOTO.
+
+    Retorna o conjunto de track_ids confirmados até agora (recalculado a
+    cada chamada a partir de contagem_frames, então sempre reflete o estado
+    mais atual mesmo se chamado fora de ordem).
+    """
+    for obj in objetos:
+        if obj["vehicle_type"] == "motorcycle" and obj["track_id"] is not None:
+            contagem_frames[obj["track_id"]] += 1
+
+    return {tid for tid, contagem in contagem_frames.items() if contagem >= min_frames}
