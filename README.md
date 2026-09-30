@@ -1,18 +1,20 @@
-# Pipeline consolidado — Detecção + Tracking + Velocidade + Distância + Zona de Risco + Score
+# Pipeline consolidado — Detecção + Tracking + Velocidade + Distância + Zona de Risco + Score + Dashboard
 
 Substitui `detectio_motos.py`, `detection.py` e `main.py` do projeto original.
 
 ## Estrutura
 
 ```
-config.py       - configurações (modelo, classes, banco, limiares e pesos do score via env vars)
-calibration.py  - conversão pixel -> metros a partir de 2 pontos de referência
-detector.py     - detecção + tracking (YOLO + ByteTrack nativo do Ultralytics)
-risk.py         - velocidade, distância, zona de risco e score (todos implementados)
-state.py        - histórico de posições, zonas e score por track_id (sem depender de YOLO/banco)
-db.py           - conexão e persistência no PostgreSQL (detecções + eventos + análise de risco)
-main.py         - orquestração / ponto de entrada
-zonas_exemplo.json - exemplo de configuração de zonas de risco
+config.py            - configurações (modelo, classes, banco, limiares e pesos do score via env vars)
+calibration.py        - conversão pixel -> metros a partir de 2 pontos de referência
+detector.py           - detecção + tracking (YOLO + ByteTrack nativo do Ultralytics)
+risk.py               - velocidade, distância, zona de risco e score (todos implementados)
+state.py              - histórico de posições, zonas e score por track_id (sem depender de YOLO/banco)
+db.py                 - conexão e persistência no PostgreSQL (detecções + eventos + análise de risco)
+main.py               - orquestração / ponto de entrada (processa vídeo/imagem, popula o banco)
+dashboard_queries.py  - consultas ao banco para o dashboard (testável sem Streamlit/Postgres real)
+dashboard.py          - interface Streamlit (só lê o que já está no banco)
+zonas_exemplo.json    - exemplo de configuração de zonas de risco
 ```
 
 ## Instalação
@@ -108,16 +110,30 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-64 testes cobrindo calibração, velocidade, distância, point-in-polygon, transições de zona, detecção de eventos de risco, score (inclusive fronteiras exatas 29/30 e 59/60) e o filtro de presença mínima de motos. Veja `TESTES.md` para o guia completo, incluindo os testes manuais que precisam do YOLO/vídeo real.
+72 testes cobrindo calibração, velocidade, distância, point-in-polygon, transições de zona, detecção de eventos de risco, score (inclusive fronteiras exatas 29/30 e 59/60), filtro de presença mínima de motos e as consultas do dashboard (testadas com sqlite como substituto portável do Postgres). Veja `TESTES.md` para o guia completo, incluindo os testes manuais que precisam do YOLO/vídeo real.
 
 ## Validação com vídeo real
 
-Rodado com o `vídeo_moto.mp4` e `yolov8m.pt` reais do projeto (450 frames, sem GPU):
+Rodado com o `vídeo_moto.mp4` e `yolov8m.pt` reais do projeto (450 frames, banco Postgres real, calibração real com faixa de rolamento):
 - **Detecção na imagem de teste:** 5/5 motos visíveis detectadas, confiança 0.78–0.91.
 - **Tracking no vídeo:** 10 `track_id` de moto surgiram ao todo, mas 3 deles apareceram em 1 frame só (ruído — falso positivo isolado ou troca de ID momentânea).
 - **Correção aplicada:** `MIN_FRAMES_PRESENCA_MOTO` (padrão 3) — só conta como moto confirmada quem aparece nesse mínimo de frames. Resultado: **7 motos confirmadas** de 10 IDs brutos, os 3 de ruído corretamente descartados.
 - **Desempenho:** ~0,44s/frame (2,3 FPS) em CPU sem GPU — considerar isso na seção de desempenho do TCC; em GPU deve ser bem mais rápido.
+- **Cenário do vídeo:** congestionamento (trânsito parado/lento). Velocidades ficaram próximas de 0 (esperado), e 181 eventos de `proximidade_perigosa` foram gerados (veículos muito próximos uns dos outros, comum em engarrafamento). Nenhum evento `velocidade_elevada` — coerente com o cenário.
+- **Nível de risco:** 8630/8630 registros em "baixo" — esperado, já que `proximidade_perigosa` sozinha (peso 25) não atinge o limiar de "médio" (30). Para ver níveis mais altos, é necessário configurar zonas de risco (`--zonas`) ou usar um vídeo com trânsito fluindo mais rápido.
+
+## Dashboard
+
+```bash
+streamlit run dashboard.py
+```
+
+Abre no navegador, lendo diretamente do banco (precisa das mesmas variáveis de ambiente `DB_*` configuradas). Mostra: total de detecções, veículos únicos, motos confirmadas, eventos de risco (total e "alto"), velocidade média, distribuição de nível de risco, eventos por tipo, detecções por tipo de veículo, evolução dos eventos no tempo e mapa de calor das posições das motos no quadro.
+
+Não roda detecção nem tracking — só visualiza o que o `main.py` já salvou. Rode o `main.py` num vídeo primeiro, depois o dashboard.
+
+A lógica de consulta (`dashboard_queries.py`) é separada da interface (`dashboard.py`) de propósito — mesmo padrão do `state.py` — para poder ser testada sem depender de tela nem de um Postgres real (os testes usam sqlite como substituto para as consultas portáveis).
 
 ## Próxima etapa
 
-Dashboard, consultando as tabelas já populadas (`deteccoes`, `eventos`, `analise_risco`). Depois, avaliar `mudanca_brusca` e `aproximacao_rapida` (exigem histórico de tendência).
+Avaliar `mudanca_brusca` e `aproximacao_rapida` (exigem histórico de tendência). O MVP do prompt mestre do TCC está completo: YOLO → Tracking → Velocidade → Distância → Zona de risco → Score → PostgreSQL → Dashboard.
