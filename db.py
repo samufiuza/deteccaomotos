@@ -140,6 +140,6 @@ def salvar_deteccoes(conn, origem, deteccoes):
             VALUES (%(timestamp)s, %(origem)s, %(track_id)s, %(vehicle_type)s,
                     %(confidence)s, %(x)s, %(y)s, %(speed_estimated)s, %(nearest_distance)s)
             """,
-            [{**d, "origem": origem} for d in deteccoes],
+            [{**d, "origem": origem[:255]} for d in deteccoes],
         )
     conn.commit()
