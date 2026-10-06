@@ -51,6 +51,9 @@ python main.py --source vídeo_moto.mp4 \
 # com nome amigável para o vídeo (vai para o banco e para o filtro do dashboard)
 python main.py --source "C:/caminho/muito/longo/vídeo_moto.mp4" --origem "congestionamento_teste"
 
+# parados contam como vizinho de quem se move (ver "Filtro do cálculo de distância")
+python main.py --source vídeo_moto.mp4 --parados so_alvo --origem cong_so_alvo
+
 # imagem
 python main.py --source moto_teste.jpg
 
@@ -178,11 +181,23 @@ distorcida pela perspectiva.
 
 ### Filtro do cálculo de distância
 
-Ficam fora do cálculo de distância/proximidade (nem como alvo, nem como vizinho):
-- pedestres e bicicletas (`CLASSES_IGNORADAS_DISTANCIA`) — ex.: manequins, bicicleta estacionada;
-- objetos parados: abaixo de `LIMIAR_PARADO_KMH` (3 km/h) com calibração, ou de
-  `LIMIAR_PARADO_PX_S` (20 px/s) sem calibração, olhando os últimos `MIN_PONTOS_PARADO`
-  (5) quadros. Um objeto que acabou de aparecer ainda conta (não dá para afirmar que está parado).
+Ficam fora do cálculo de distância/proximidade, nos dois papéis (nem como alvo, nem como vizinho):
+- pedestres e bicicletas (`CLASSES_IGNORADAS_DISTANCIA`) — ex.: manequins, bicicleta estacionada.
+
+**Objetos parados** — abaixo de `LIMIAR_PARADO_KMH` (3 km/h) com calibração, ou de
+`LIMIAR_PARADO_PX_S` (20 px/s) sem calibração, olhando os últimos `MIN_PONTOS_PARADO`
+(5) quadros; um objeto que acabou de aparecer ainda conta (não dá para afirmar que está
+parado) — têm dois modos, escolhidos por `--parados` (ou `PARADOS_NA_DISTANCIA`):
+
+| Modo | Parado como alvo | Parado como vizinho | Efeito |
+|---|---|---|---|
+| `alvo_e_vizinho` (padrão) | não | não | Ignora carro estacionado e fila parada. Uma moto que passa rente a carros parados **não** gera proximidade. |
+| `so_alvo` | não | **sim** | Moto em movimento perto de carro parado gera `proximidade_perigosa` (e `aproximacao_rapida` se se aproxima rápido). Dois carros parados colados continuam sem evento. |
+
+Cuidado com `so_alvo`: pode gerar evento quando a moto passa por carros estacionados à
+beira da rua (mais "passou perto de objeto fixo" do que conflito entre veículos). Para
+comparar os modos no mesmo vídeo, use `--origem` diferente em cada execução, por exemplo
+`--origem cong_alvo_e_vizinho` e `--origem cong_so_alvo`, e compare no filtro do dashboard.
 
 ## Testes automatizados
 
@@ -191,7 +206,7 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-171 testes cobrindo calibração (simples e por homografia: matemática, ajuste de resolução, integração com o pipeline e ferramenta de clique), velocidade, distância, point-in-polygon, transições de zona, detecção de eventos de risco, score (inclusive fronteiras exatas 29/30 e 59/60), tendência (mudança brusca e aproximação rápida), tempo do quadro e nome da origem, filtro de pedestres/bicicletas/parados na distância, filtro de presença mínima de motos e as consultas do dashboard (inclusive o filtro por vídeo) (testadas com sqlite como substituto portável do Postgres). Veja `TESTES.md` para o guia completo, incluindo os testes manuais que precisam do YOLO/vídeo real.
+190 testes cobrindo calibração (simples e por homografia: matemática, ajuste de resolução, integração com o pipeline e ferramenta de clique), velocidade, distância, point-in-polygon, transições de zona, detecção de eventos de risco, score (inclusive fronteiras exatas 29/30 e 59/60), tendência (mudança brusca e aproximação rápida), tempo do quadro e nome da origem, filtro de pedestres/bicicletas/parados na distância (inclusive o modo `so_alvo`), filtro de presença mínima de motos e as consultas do dashboard (inclusive o filtro por vídeo) (testadas com sqlite como substituto portável do Postgres). Veja `TESTES.md` para o guia completo, incluindo os testes manuais que precisam do YOLO/vídeo real.
 
 ## Validação com vídeo real
 

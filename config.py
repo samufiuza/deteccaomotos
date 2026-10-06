@@ -97,6 +97,22 @@ LIMIAR_PARADO_PX_S = float(os.environ.get("LIMIAR_PARADO_PX_S", 20.0))
 # (antes disso ele é tratado como em movimento — não há como saber).
 MIN_PONTOS_PARADO = int(os.environ.get("MIN_PONTOS_PARADO", 5))
 
+# Papel dos objetos PARADOS no cálculo de distância/proximidade:
+#   "alvo_e_vizinho" (padrão): parado não entra de jeito nenhum — não gera
+#       evento para si e não conta como "vizinho mais próximo" de ninguém.
+#   "so_alvo": parado não gera evento para si, mas CONTINUA valendo como
+#       vizinho de quem está em movimento (ex.: moto passando entre carros
+#       parados no congestionamento gera proximidade; dois carros parados
+#       colados um no outro continuam sem gerar).
+# Pedestres e bicicletas (CLASSES_IGNORADAS_DISTANCIA) ficam fora nos dois modos.
+# Pode ser trocado por execução com `main.py --parados so_alvo`.
+MODOS_PARADOS = ("alvo_e_vizinho", "so_alvo")
+PARADOS_NA_DISTANCIA = os.environ.get("PARADOS_NA_DISTANCIA", "alvo_e_vizinho")
+if PARADOS_NA_DISTANCIA not in MODOS_PARADOS:
+    raise ValueError(
+        f"PARADOS_NA_DISTANCIA='{PARADOS_NA_DISTANCIA}' inválido; use um de: {', '.join(MODOS_PARADOS)}"
+    )
+
 # ==== TEMPO DO QUADRO ====
 # Em arquivos de vídeo o tempo de cada quadro é quadro ÷ fps (tempo do vídeo),
 # independente da velocidade de processamento. Se o arquivo não informar o

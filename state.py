@@ -31,6 +31,8 @@ from config import (
     LIMIAR_PARADO_KMH,
     LIMIAR_PARADO_PX_S,
     MIN_PONTOS_PARADO,
+    MODOS_PARADOS,
+    PARADOS_NA_DISTANCIA,
 )
 
 # Eventos de transição gerados por calcular_riscos (zona é gerada por
@@ -44,7 +46,7 @@ EVENTOS_TRANSICAO = (
 
 
 def atualizar_historico_e_calcular(objetos, historico, escala, ts, vizinhos=None,
-                                    usar_plano_chao=False):
+                                    usar_plano_chao=False, parados_na_distancia=None):
     """
     Atualiza o histórico de posições por track_id e calcula, para cada
     objeto: velocidade estimada e distância até o veículo mais próximo no
@@ -52,16 +54,21 @@ def atualizar_historico_e_calcular(objetos, historico, escala, ts, vizinhos=None
 
     Ficam FORA do cálculo de distância (nem como alvo, nem como vizinho):
       - pedestres e bicicletas (config.CLASSES_IGNORADAS_DISTANCIA) — ex.:
-        manequins detectados como pessoa, bicicleta estacionada;
-      - objetos parados (ver risk.esta_parado) — ex.: carro estacionado,
-        veículos travados no congestionamento.
-    Para esses, a distância fica None.
+        manequins detectados como pessoa, bicicleta estacionada.
+    Objetos PARADOS (ver risk.esta_parado — ex.: carro estacionado, veículos
+    travados no congestionamento) dependem de `parados_na_distancia`:
+      - "alvo_e_vizinho" (padrão): ficam fora nos dois papéis;
+      - "so_alvo": não geram distância para si, mas continuam valendo como
+        vizinho de quem está em movimento.
+    Para quem não é alvo, a distância fica None.
 
     historico: dict mutável {track_id: deque de {"x","y","timestamp"}},
         mantido entre chamadas (estado do vídeo inteiro).
     ts: tempo do quadro (ver fonte.timestamp_do_quadro).
     vizinhos: dict opcional, preenchido com {track_id: track_id_do_vizinho_mais_proximo}
         (usado por calcular_tendencias para a aproximação rápida).
+    parados_na_distancia: "alvo_e_vizinho" ou "so_alvo" (ver acima). None usa
+        config.PARADOS_NA_DISTANCIA. Valor inválido levanta ValueError.
     usar_plano_chao: se True (calibração por homografia, ver calibration.py), as
         posições vêm de obj["mx"], obj["my"] — metros no plano do chão, no ponto
         de contato do veículo — e `escala` é ignorada (as posições já estão em
@@ -72,6 +79,10 @@ def atualizar_historico_e_calcular(objetos, historico, escala, ts, vizinhos=None
 
     Retorna (velocidades: {track_id: km/h|None}, distancias: {track_id: metros|pixels|None})
     """
+    modo = PARADOS_NA_DISTANCIA if parados_na_distancia is None else parados_na_distancia
+    if modo not in MODOS_PARADOS:
+        raise ValueError(f"parados_na_distancia='{modo}' inválido; use um de: {', '.join(MODOS_PARADOS)}")
+
     sem_projecao = []
     if usar_plano_chao:
         escala = 1.0
@@ -94,17 +105,18 @@ def atualizar_historico_e_calcular(objetos, historico, escala, ts, vizinhos=None
             continue
         velocidades[tid] = calcular_velocidade(list(historico[tid]), escala)
 
-    elegiveis = [obj for obj in objetos if objeto_entra_na_distancia(obj, historico, escala)]
-    ids_elegiveis = {id(obj) for obj in elegiveis}
+    papeis = [papeis_na_distancia(obj, historico, escala, modo) for obj in objetos]
 
     distancias = {}
-    for obj_a in objetos:
-        if id(obj_a) not in ids_elegiveis:
+    for i, obj_a in enumerate(objetos):
+        e_alvo, _ = papeis[i]
+        if not e_alvo:
             distancias[obj_a["track_id"]] = None
             continue
         menor, vizinho = None, None
-        for obj_b in elegiveis:
-            if obj_b is obj_a:
+        for j, obj_b in enumerate(objetos):
+            _, pode_ser_vizinho = papeis[j]
+            if i == j or not pode_ser_vizinho:
                 continue
             d = calcular_distancia(obj_a, obj_b, escala)
             if menor is None or d < menor:
@@ -120,16 +132,33 @@ def atualizar_historico_e_calcular(objetos, historico, escala, ts, vizinhos=None
     return velocidades, distancias
 
 
-def objeto_entra_na_distancia(obj, historico, escala):
-    """True se o objeto deve participar do cálculo de distância (ver acima)."""
+def papeis_na_distancia(obj, historico, escala, modo=None):
+    """
+    Retorna (e_alvo, pode_ser_vizinho) para o cálculo de distância (ver
+    atualizar_historico_e_calcular).
+
+    Pedestres e bicicletas: nenhum dos dois papéis, em qualquer modo.
+    Parado: modo "alvo_e_vizinho" -> nenhum; modo "so_alvo" -> não é alvo, mas
+    pode ser vizinho de quem se move.
+    """
+    modo = PARADOS_NA_DISTANCIA if modo is None else modo
     if obj.get("vehicle_type") in CLASSES_IGNORADAS_DISTANCIA:
-        return False
+        return False, False
     tid = obj["track_id"]
     if tid is None:
-        return True  # sem histórico não há como dizer que está parado
-    return not esta_parado(
+        return True, True  # sem histórico não há como dizer que está parado
+    parado = esta_parado(
         list(historico[tid]), escala, LIMIAR_PARADO_KMH, LIMIAR_PARADO_PX_S, MIN_PONTOS_PARADO
     )
+    if not parado:
+        return True, True
+    return False, modo == "so_alvo"
+
+
+def objeto_entra_na_distancia(obj, historico, escala):
+    """True se o objeto participa do cálculo de distância nos DOIS papéis (modo
+    "alvo_e_vizinho"). Mantida por compatibilidade; o cálculo usa papeis_na_distancia."""
+    return papeis_na_distancia(obj, historico, escala, "alvo_e_vizinho") == (True, True)
 
 
 def calcular_tendencias(objetos, historico, distancias, vizinhos, historico_distancias, escala, ts):

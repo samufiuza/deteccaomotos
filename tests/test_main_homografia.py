@@ -95,7 +95,7 @@ def _rodar(main_mod, monkeypatch, H_chao, escala, frame, gerar_objeto, n=10):
 
 def test_parse_args_carrega_a_homografia(main_mod, arquivo_calibracao, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["main.py", "--source", "x.mp4", "--calib-arquivo", arquivo_calibracao])
-    source, origem, no_display, batch, escala, zonas, calib_chao = main_mod.parse_args()
+    source, origem, no_display, batch, escala, zonas, calib_chao, parados = main_mod.parse_args()
     assert calib_chao is not None
     H, resolucao = calib_chao
     assert H.shape == (3, 3) and resolucao == (1280, 720)
@@ -110,7 +110,7 @@ def test_parse_args_arquivo_inexistente_encerra_com_erro(main_mod, tmp_path, mon
 
 def test_parse_args_sem_homografia_mantem_comportamento_antigo(main_mod, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["main.py", "--source", "x.mp4", "--calib-p1", "0,0", "--calib-p2", "10,0", "--calib-dist", "1"])
-    source, origem, no_display, batch, escala, zonas, calib_chao = main_mod.parse_args()
+    source, origem, no_display, batch, escala, zonas, calib_chao, parados = main_mod.parse_args()
     assert escala == pytest.approx(0.1)  # escala simples
     assert calib_chao is None
     assert origem == "x.mp4"  # --origem do Cowork continua funcionando
@@ -185,3 +185,59 @@ def test_pipeline_sem_homografia_continua_usando_pixels_e_escala(main_mod, monke
     vel, _ = _rodar(main_mod, monkeypatch, None, 0.1, frame, gerar)
     # 10 px/quadro * 0,1 m/px * 30 quadros/s = 30 m/s = 108 km/h
     assert vel[1] == pytest.approx(108.0, abs=0.1)
+
+
+# ---- --parados (modo dos objetos parados na distância) ----
+
+def test_parse_args_parados_padrao_vem_da_config(main_mod, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["main.py", "--source", "x.mp4"])
+    resultado = main_mod.parse_args()
+    assert resultado[7] == "alvo_e_vizinho"
+    assert "alvo_e_vizinho" in capsys.readouterr().out
+
+
+def test_parse_args_parados_so_alvo(main_mod, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["main.py", "--source", "x.mp4", "--parados", "so_alvo"])
+    assert main_mod.parse_args()[7] == "so_alvo"
+
+
+def test_parse_args_parados_invalido_encerra_com_erro(main_mod, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["main.py", "--source", "x.mp4", "--parados", "qualquer"])
+    with pytest.raises(SystemExit):
+        main_mod.parse_args()
+
+
+def _rodar_cena_com_carro_parado(main_mod, monkeypatch, modo):
+    """Carro parado + moto em movimento a ~1 m dele; devolve o nearest_distance da moto."""
+    frame = np.zeros((720, 1280, 3), dtype="uint8")
+    quadro = {"i": 0}
+
+    def detector_falso(_frame, _model):
+        i = quadro["i"]
+        quadro["i"] += 1
+        carro = {"track_id": 1, "vehicle_type": "car", "confidence": 0.9,
+                 "x": 500.0, "y": 300.0, "bbox": (480, 280, 520, 320)}
+        moto = {"track_id": 2, "vehicle_type": "motorcycle", "confidence": 0.9,
+                "x": 400.0 + 5 * i, "y": 310.0, "bbox": (380 + 5 * i, 290, 420 + 5 * i, 330)}
+        return [carro, moto], None
+
+    monkeypatch.setattr(main_mod, "detectar_e_rastrear", detector_falso)
+    estado = main_mod.novo_estado()
+    registros = None
+    for i in range(8):
+        saida = main_mod.processar_frame(
+            frame, None, T0 + timedelta(seconds=i * 0.1), estado, 0.1, [], parados_na_distancia=modo
+        )
+        registros = saida[1]
+    return {r["track_id"]: r["nearest_distance"] for r in registros}
+
+
+def test_processar_frame_modo_padrao_ignora_carro_parado(main_mod, monkeypatch):
+    dist = _rodar_cena_com_carro_parado(main_mod, monkeypatch, "alvo_e_vizinho")
+    assert dist[2] is None
+
+
+def test_processar_frame_so_alvo_moto_enxerga_carro_parado(main_mod, monkeypatch):
+    dist = _rodar_cena_com_carro_parado(main_mod, monkeypatch, "so_alvo")
+    assert dist[2] is not None and dist[2] > 0
+    assert dist[1] is None  # o carro parado continua sem evento para si

@@ -7,6 +7,7 @@ Uso:
     python main.py --source caminho/para/video.mp4
     python main.py --source caminho/para/video.mp4 --origem "congestionamento_av_x"
     python main.py --source video.mp4 --calib-arquivo calibracao_resultado.json   # homografia
+    python main.py --source video.mp4 --parados so_alvo   # parados contam como vizinho
     python main.py --source caminho/para/imagem.jpg
     python main.py --source 0              # webcam
     python main.py --source video.mp4 --no-display   # sem abrir janela (ex.: servidor)
@@ -39,7 +40,10 @@ from state import (
     calcular_tendencias,
     atualizar_presenca_motos,
 )
-from config import HISTORICO_MAX_POSICOES, MIN_FRAMES_PRESENCA_MOTO, FPS_PADRAO
+from config import (
+    HISTORICO_MAX_POSICOES, MIN_FRAMES_PRESENCA_MOTO, FPS_PADRAO,
+    MODOS_PARADOS, PARADOS_NA_DISTANCIA,
+)
 
 JANELA_VIDEO = "Deteccao - Video/Webcam"
 JANELA_IMAGEM = "Deteccao - Imagem"
@@ -69,6 +73,12 @@ def parse_args():
         "--origem", default=None,
         help="Nome amigável do vídeo/câmera salvo no banco e usado no filtro do dashboard "
              "(padrão: nome do arquivo, sem a pasta). Máx. 255 caracteres."
+    )
+    parser.add_argument(
+        "--parados", choices=MODOS_PARADOS, default=None,
+        help="Papel dos objetos parados no cálculo de distância: 'alvo_e_vizinho' (ficam fora "
+             "nos dois papéis) ou 'so_alvo' (não geram evento para si, mas contam como vizinho "
+             f"de quem se move). Padrão: {PARADOS_NA_DISTANCIA} (config.PARADOS_NA_DISTANCIA)"
     )
     parser.add_argument(
         "--no-display", action="store_true",
@@ -121,11 +131,13 @@ def parse_args():
     zonas = carregar_zonas(args.zonas)
     if not zonas:
         print("⚠️  Sem zonas de risco configuradas (--zonas não informado).")
+    parados = args.parados or PARADOS_NA_DISTANCIA
+    print(f"ℹ️  Objetos parados na distância: {parados}")
     origem = nome_origem(source, args.origem)
     if args.origem and len(args.origem.strip()) > len(origem):
         print(f"⚠️  --origem tinha mais de {len(origem)} caracteres e foi cortado.")
     print(f"🎥 Origem registrada no banco: {origem}")
-    return source, origem, args.no_display, args.batch_size, escala, zonas, calib_chao
+    return source, origem, args.no_display, args.batch_size, escala, zonas, calib_chao, parados
 
 
 CORES_NIVEL = {
@@ -204,7 +216,7 @@ def preparar_homografia(calib_chao, frame):
     return H
 
 
-def processar_frame(frame, model, ts, estado, escala, zonas, H_chao=None):
+def processar_frame(frame, model, ts, estado, escala, zonas, H_chao=None, parados_na_distancia=None):
     """
     Processa um quadro. `ts` é o tempo do quadro (tempo do vídeo em arquivos,
     relógio ao vivo em webcam/stream — ver fonte.timestamp_do_quadro).
@@ -226,7 +238,7 @@ def processar_frame(frame, model, ts, estado, escala, zonas, H_chao=None):
     vizinhos = {}
     velocidades, distancias = atualizar_historico_e_calcular(
         objetos, estado["historico"], escala, ts, vizinhos,
-        usar_plano_chao=H_chao is not None,
+        usar_plano_chao=H_chao is not None, parados_na_distancia=parados_na_distancia,
     )
     tendencias = calcular_tendencias(
         objetos, estado["historico"], distancias, vizinhos,
@@ -268,7 +280,7 @@ def processar_frame(frame, model, ts, estado, escala, zonas, H_chao=None):
 
 
 def main():
-    source, origem, no_display, batch_size, escala, zonas, calib_chao = parse_args()
+    source, origem, no_display, batch_size, escala, zonas, calib_chao, parados = parse_args()
 
     conn = db.conectar()
     db.garantir_schema(conn)
@@ -308,7 +320,8 @@ def main():
                 print(f"❌ {e}")
                 return
             objetos, registros, velocidades, zonas_atuais, entradas, analises, motos_confirmadas = \
-                processar_frame(frame, model, datetime.now(), estado, escala, zonas, H_chao=H_chao)
+                processar_frame(frame, model, datetime.now(), estado, escala, zonas, H_chao=H_chao,
+                                parados_na_distancia=parados)
             acumular(registros, entradas, analises)
             frame = desenhar(frame, objetos, velocidades, zonas_atuais, zonas, analises, len(motos_confirmadas))
             if not no_display:
@@ -353,7 +366,8 @@ def main():
 
                 ts = timestamp_do_quadro(indice_quadro, fps, inicio, ao_vivo)
                 objetos, registros, velocidades, zonas_atuais, entradas, analises, motos_confirmadas = \
-                    processar_frame(frame, model, ts, estado, escala, zonas, H_chao=H_chao)
+                    processar_frame(frame, model, ts, estado, escala, zonas, H_chao=H_chao,
+                                    parados_na_distancia=parados)
                 acumular(registros, entradas, analises)
                 indice_quadro += 1
 
