@@ -225,10 +225,11 @@ def main():
 
                 if not no_display:
                     frame = desenhar(frame, objetos, velocidades, zonas_atuais, zonas, analises, len(motos_confirmadas))
-                    cv2.imshow("Detecção - Vídeo/Webcam", frame)
+                    cv2.imshow("Deteccao - Video/Webcam", frame)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
-                        break
-
+                       break
+                    if cv2.getWindowProperty("Deteccao - Video/Webcam", cv2.WND_PROP_VISIBLE) < 1:
+                       break
                 if len(buffer_registros) >= batch_size:
                     db.salvar_deteccoes(conn, str(source), buffer_registros)
                     buffer_registros = []
