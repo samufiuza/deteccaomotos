@@ -2,9 +2,9 @@
 Análise de risco.
 
 Velocidade, distância e zona: implementadas.
-Score: implementado (combina os eventos ativos no frame atual).
-"mudanca_brusca" e "aproximacao_rapida" ainda não são detectados — exigem
-análise de tendência ao longo do tempo, não só do frame atual.
+Tendência (mudanca_brusca, aproximacao_rapida): implementadas — analisam a
+evolução nos últimos quadros, não só o quadro atual.
+Score: implementado (combina os eventos ativos no quadro atual).
 """
 
 import math
@@ -106,22 +106,24 @@ def _ponto_dentro_poligono(x, y, poligono):
     return dentro
 
 
-def detectar_eventos_ativos(velocidade, distancia, zona, limiar_velocidade, limiar_distancia):
+def detectar_eventos_ativos(velocidade, distancia, zona, limiar_velocidade, limiar_distancia,
+                            mudanca_brusca=False, velocidade_aproximacao=None,
+                            limiar_aproximacao=None):
     """
-    Verifica, para os valores ATUAIS (de um frame) de um track_id, quais
-    condições de risco estão ativas agora.
+    Verifica, para os valores ATUAIS de um track_id, quais condições de
+    risco estão ativas agora.
 
     velocidade: km/h estimado, ou None se não calibrado.
-    distancia: metros até o veículo mais próximo, ou None (se calibrado em
-        metros — se vier em pixels por falta de calibração, é ignorada aqui,
-        pois pixels não são comparáveis ao limiar em metros).
+    distancia: metros até o veículo mais próximo, ou None.
     zona: nome da zona de risco em que o veículo está, ou None.
+    mudanca_brusca: bool já calculado por detectar_mudanca_brusca.
+    velocidade_aproximacao: m/s com que a distância ao vizinho diminui
+        (ver calcular_velocidade_aproximacao), ou None.
+    limiar_aproximacao: m/s a partir do qual vira "aproximacao_rapida".
 
     Retorna uma lista de strings (nomes de eventos ativos agora), entre:
-    "velocidade_elevada", "proximidade_perigosa", "zona_risco".
-
-    Nota: "mudanca_brusca" e "aproximacao_rapida" não são detectados aqui —
-    exigem histórico/tendência, não só o frame atual (próxima iteração).
+    "velocidade_elevada", "proximidade_perigosa", "zona_risco",
+    "mudanca_brusca", "aproximacao_rapida".
     """
     eventos = []
 
@@ -134,7 +136,114 @@ def detectar_eventos_ativos(velocidade, distancia, zona, limiar_velocidade, limi
     if zona is not None:
         eventos.append("zona_risco")
 
+    if mudanca_brusca:
+        eventos.append("mudanca_brusca")
+
+    if (velocidade_aproximacao is not None and limiar_aproximacao is not None
+            and velocidade_aproximacao >= limiar_aproximacao):
+        eventos.append("aproximacao_rapida")
+
     return eventos
+
+
+def detectar_mudanca_brusca(historico_posicoes, escala_px_para_metros, limiar_angulo_graus,
+                            limiar_aceleracao_m_s2, min_deslocamento_m, janela=6):
+    """
+    Detecta mudança brusca de trajetória OU de velocidade nos últimos
+    `janela` pontos de um track_id.
+
+    A janela é dividida em duas metades (A = início->meio, B = meio->fim):
+      - direção: ângulo entre os vetores A e B >= limiar_angulo_graus
+        (só avaliado se as duas metades andaram pelo menos min_deslocamento_m,
+        para não confundir o tremor da bounding box com uma curva);
+      - velocidade: |vel_B - vel_A| / tempo entre os centros das metades
+        >= limiar_aceleracao_m_s2 (freada ou arrancada brusca).
+
+    Retorna False se não houver calibração ou histórico suficiente (< 3 pontos).
+    """
+    if escala_px_para_metros is None:
+        return False
+    pontos = historico_posicoes[-janela:]
+    if len(pontos) < 3:
+        return False
+
+    meio = len(pontos) // 2
+    a0, a1, b1 = pontos[0], pontos[meio], pontos[-1]
+    dt_a = (a1["timestamp"] - a0["timestamp"]).total_seconds()
+    dt_b = (b1["timestamp"] - a1["timestamp"]).total_seconds()
+    if dt_a <= 0 or dt_b <= 0:
+        return False
+
+    va = ((a1["x"] - a0["x"]) * escala_px_para_metros, (a1["y"] - a0["y"]) * escala_px_para_metros)
+    vb = ((b1["x"] - a1["x"]) * escala_px_para_metros, (b1["y"] - a1["y"]) * escala_px_para_metros)
+    desl_a, desl_b = math.hypot(*va), math.hypot(*vb)
+
+    # 1) mudança de direção
+    if desl_a >= min_deslocamento_m and desl_b >= min_deslocamento_m:
+        cos_ang = (va[0] * vb[0] + va[1] * vb[1]) / (desl_a * desl_b)
+        angulo = math.degrees(math.acos(max(-1.0, min(1.0, cos_ang))))
+        if angulo >= limiar_angulo_graus:
+            return True
+
+    # 2) variação brusca de velocidade (freada/arrancada)
+    vel_a, vel_b = desl_a / dt_a, desl_b / dt_b
+    dt_centros = (dt_a + dt_b) / 2
+    aceleracao = abs(vel_b - vel_a) / dt_centros
+    return aceleracao >= limiar_aceleracao_m_s2
+
+
+def calcular_velocidade_aproximacao(historico_distancias, janela=6):
+    """
+    historico_distancias: lista de dicts {"distancia": metros, "vizinho": track_id,
+        "timestamp": datetime}, em ordem cronológica, de um mesmo track_id.
+
+    Usa só a sequência final em que o vizinho mais próximo é o MESMO veículo
+    (se o vizinho mudou, a "queda" de distância é troca de referência, não
+    aproximação real).
+
+    Retorna m/s com que a distância diminui (positivo = aproximando,
+    negativo = afastando), ou None se não houver dados suficientes.
+    """
+    if not historico_distancias:
+        return None
+    vizinho_atual = historico_distancias[-1]["vizinho"]
+    trecho = []
+    for item in reversed(historico_distancias):
+        if item["vizinho"] != vizinho_atual or item["distancia"] is None:
+            break
+        trecho.append(item)
+        if len(trecho) == janela:
+            break
+    if len(trecho) < 2:
+        return None
+    trecho.reverse()
+    dt = (trecho[-1]["timestamp"] - trecho[0]["timestamp"]).total_seconds()
+    if dt <= 0:
+        return None
+    return (trecho[0]["distancia"] - trecho[-1]["distancia"]) / dt
+
+
+def esta_parado(historico_posicoes, escala_px_para_metros, limiar_kmh, limiar_px_s, min_pontos):
+    """
+    Diz se um objeto está parado, olhando seu histórico recente.
+
+    Com calibração: velocidade (km/h) abaixo de limiar_kmh.
+    Sem calibração: deslocamento em pixels/segundo abaixo de limiar_px_s.
+    Com menos de min_pontos no histórico retorna False (ainda não dá para
+    afirmar — o objeto acabou de aparecer).
+    """
+    if len(historico_posicoes) < min_pontos:
+        return False
+    pontos = historico_posicoes[-min_pontos:]
+    if escala_px_para_metros is not None:
+        vel = calcular_velocidade(pontos, escala_px_para_metros, janela=min_pontos)
+        return vel is not None and vel < limiar_kmh
+    inicio, fim = pontos[0], pontos[-1]
+    dt = (fim["timestamp"] - inicio["timestamp"]).total_seconds()
+    if dt <= 0:
+        return False
+    px_s = math.dist((inicio["x"], inicio["y"]), (fim["x"], fim["y"])) / dt
+    return px_s < limiar_px_s
 
 
 def calcular_score(eventos_ativos, pesos):

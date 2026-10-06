@@ -32,7 +32,19 @@ except RuntimeError as e:
     st.info("Configure DB_HOST, DB_NAME, DB_USER, DB_PASSWORD antes de rodar o dashboard.")
     st.stop()
 
-kpis = dq.kpis_gerais(conn, MIN_FRAMES_PRESENCA_MOTO)
+# ==== Filtro por vídeo (origem_video) ====
+TODOS = "Todos os vídeos"
+try:
+    origens = dq.listar_origens(conn)
+except Exception:
+    conn.rollback()  # banco antigo sem a coluna: rode o main.py uma vez para migrar
+    origens = []
+escolha = st.sidebar.selectbox("Vídeo / origem", [TODOS] + origens)
+origem = None if escolha == TODOS else escolha
+if origem:
+    st.caption(f"Filtrando pelo vídeo: **{origem}**")
+
+kpis = dq.kpis_gerais(conn, MIN_FRAMES_PRESENCA_MOTO, origem=origem)
 
 if kpis["total_deteccoes"] == 0:
     st.warning(
@@ -61,7 +73,7 @@ col_a, col_b = st.columns(2)
 
 with col_a:
     st.subheader("Distribuição de nível de risco")
-    dados_risco = dq.distribuicao_risco(conn)
+    dados_risco = dq.distribuicao_risco(conn, origem=origem)
     if dados_risco:
         df_risco = pd.DataFrame(dados_risco).set_index("risk_level")
         # ordena baixo/medio/alto, não alfabético
@@ -72,7 +84,7 @@ with col_a:
 
 with col_b:
     st.subheader("Eventos por tipo")
-    dados_eventos = dq.eventos_por_tipo(conn)
+    dados_eventos = dq.eventos_por_tipo(conn, origem=origem)
     if dados_eventos:
         df_eventos = pd.DataFrame(dados_eventos).set_index("event_type")
         st.bar_chart(df_eventos)
@@ -80,24 +92,25 @@ with col_b:
         st.caption("Nenhum evento de risco registrado ainda.")
 
 st.subheader("Detecções por tipo de veículo")
-dados_veiculos = dq.deteccoes_por_tipo_veiculo(conn)
+dados_veiculos = dq.deteccoes_por_tipo_veiculo(conn, origem=origem)
 if dados_veiculos:
     df_veiculos = pd.DataFrame(dados_veiculos).set_index("vehicle_type")
     st.bar_chart(df_veiculos)
 
 st.subheader("Evolução dos eventos de risco ao longo do tempo")
 try:
-    dados_serie = dq.serie_temporal_eventos(conn)
+    dados_serie = dq.serie_temporal_eventos(conn, origem=origem)
     if dados_serie:
         df_serie = pd.DataFrame(dados_serie).set_index("periodo")
         st.line_chart(df_serie)
     else:
         st.caption("Sem eventos suficientes ainda para mostrar evolução no tempo.")
 except Exception as e:
+    conn.rollback()
     st.caption(f"Não foi possível montar a série temporal: {e}")
 
 st.subheader("Mapa de calor — onde as motos mais aparecem no quadro")
-posicoes = dq.posicoes_para_mapa_calor(conn, vehicle_type="motorcycle")
+posicoes = dq.posicoes_para_mapa_calor(conn, vehicle_type="motorcycle", origem=origem)
 if posicoes:
     df_pos = pd.DataFrame(posicoes)
     # histograma 2D simples: mais denso = mais detecções naquela região da imagem

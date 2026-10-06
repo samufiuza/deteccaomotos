@@ -1,8 +1,9 @@
 """
 Acesso ao PostgreSQL.
 
-Schema desta etapa (detecção + tracking). As tabelas de eventos e
-análise de risco serão adicionadas quando essas etapas forem implementadas.
+Tabelas: deteccoes, eventos e analise_risco. As três guardam origem_video
+(nome amigável do vídeo/câmera, ver fonte.nome_origem) para o dashboard
+poder filtrar por vídeo.
 """
 
 import psycopg2
@@ -30,6 +31,14 @@ ALTER TABLE deteccoes ADD COLUMN IF NOT EXISTS speed_estimated FLOAT;
 ALTER TABLE deteccoes ADD COLUMN IF NOT EXISTS nearest_distance FLOAT;
 """
 
+# Bancos criados antes desta versão não tinham origem em eventos/analise_risco.
+ALTER_ORIGEM_SQL = """
+ALTER TABLE eventos ADD COLUMN IF NOT EXISTS origem_video VARCHAR(255);
+ALTER TABLE analise_risco ADD COLUMN IF NOT EXISTS origem_video VARCHAR(255);
+"""
+
+TAMANHO_MAX_ORIGEM = 255
+
 
 CREATE_EVENTOS_SQL = """
 CREATE TABLE IF NOT EXISTS eventos (
@@ -40,7 +49,8 @@ CREATE TABLE IF NOT EXISTS eventos (
     severity VARCHAR(10),
     speed_estimated FLOAT,
     distance FLOAT,
-    zona VARCHAR(50)
+    zona VARCHAR(50),
+    origem_video VARCHAR(255)
 );
 """
 
@@ -51,7 +61,8 @@ CREATE TABLE IF NOT EXISTS analise_risco (
     track_id INTEGER,
     timestamp TIMESTAMP NOT NULL,
     risk_score INTEGER,
-    risk_level VARCHAR(10)
+    risk_level VARCHAR(10),
+    origem_video VARCHAR(255)
 );
 """
 
@@ -73,10 +84,16 @@ def garantir_schema(conn):
         cur.execute(ALTER_DETECCOES_SQL)
         cur.execute(CREATE_EVENTOS_SQL)
         cur.execute(CREATE_ANALISE_RISCO_SQL)
+        cur.execute(ALTER_ORIGEM_SQL)
     conn.commit()
 
 
-def salvar_analises_risco(conn, analises):
+def _origem_segura(origem):
+    """Garante que a origem cabe na coluna VARCHAR(255)."""
+    return None if origem is None else str(origem)[:TAMANHO_MAX_ORIGEM]
+
+
+def salvar_analises_risco(conn, analises, origem=None):
     """
     Insere um lote de análises de risco.
 
@@ -88,15 +105,15 @@ def salvar_analises_risco(conn, analises):
     with conn.cursor() as cur:
         cur.executemany(
             """
-            INSERT INTO analise_risco (track_id, timestamp, risk_score, risk_level)
-            VALUES (%(track_id)s, %(timestamp)s, %(risk_score)s, %(risk_level)s)
+            INSERT INTO analise_risco (track_id, timestamp, risk_score, risk_level, origem_video)
+            VALUES (%(track_id)s, %(timestamp)s, %(risk_score)s, %(risk_level)s, %(origem)s)
             """,
-            analises,
+            [{**a, "origem": _origem_segura(origem)} for a in analises],
         )
     conn.commit()
 
 
-def salvar_eventos(conn, eventos):
+def salvar_eventos(conn, eventos, origem=None):
     """
     Insere um lote de eventos de risco.
 
@@ -111,11 +128,12 @@ def salvar_eventos(conn, eventos):
         cur.executemany(
             """
             INSERT INTO eventos
-                (track_id, event_type, timestamp, severity, speed_estimated, distance, zona)
+                (track_id, event_type, timestamp, severity, speed_estimated, distance, zona,
+                 origem_video)
             VALUES (%(track_id)s, %(event_type)s, %(timestamp)s, %(severity)s,
-                    %(speed_estimated)s, %(distance)s, %(zona)s)
+                    %(speed_estimated)s, %(distance)s, %(zona)s, %(origem)s)
             """,
-            eventos,
+            [{**e, "origem": _origem_segura(origem)} for e in eventos],
         )
     conn.commit()
 
@@ -140,6 +158,6 @@ def salvar_deteccoes(conn, origem, deteccoes):
             VALUES (%(timestamp)s, %(origem)s, %(track_id)s, %(vehicle_type)s,
                     %(confidence)s, %(x)s, %(y)s, %(speed_estimated)s, %(nearest_distance)s)
             """,
-            [{**d, "origem": origem[:255]} for d in deteccoes],
+            [{**d, "origem": _origem_segura(origem)} for d in deteccoes],
         )
     conn.commit()

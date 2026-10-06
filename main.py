@@ -1,14 +1,16 @@
 """
-Pipeline consolidado — Etapa atual: Detecção + Tracking + Persistência.
-
-Substitui detectio_motos.py, detection.py e main.py do projeto original,
-que faziam a mesma coisa de formas diferentes.
+Pipeline consolidado — Detecção + Tracking + Velocidade + Distância +
+Zona de risco + Tendência (mudança brusca / aproximação rápida) + Score +
+Persistência.
 
 Uso:
     python main.py --source caminho/para/video.mp4
+    python main.py --source caminho/para/video.mp4 --origem "congestionamento_av_x"
     python main.py --source caminho/para/imagem.jpg
     python main.py --source 0              # webcam
     python main.py --source video.mp4 --no-display   # sem abrir janela (ex.: servidor)
+
+Fechar a janela: tecla 'q' ou o botão X da janela.
 
 Antes de rodar, defina as variáveis de ambiente do banco (ver config.py):
     export DB_HOST=localhost
@@ -19,7 +21,6 @@ Antes de rodar, defina as variáveis de ambiente do banco (ver config.py):
 
 import argparse
 import json
-import os
 from collections import defaultdict, deque
 from datetime import datetime
 
@@ -29,8 +30,18 @@ import numpy as np
 import db
 from detector import carregar_modelo, detectar_e_rastrear
 from calibration import parse_calibracao
-from state import atualizar_historico_e_calcular, atualizar_zonas, calcular_riscos, atualizar_presenca_motos
-from config import PRIMARY_CLASS_ID, HISTORICO_MAX_POSICOES, MIN_FRAMES_PRESENCA_MOTO
+from fonte import eh_fonte_ao_vivo, nome_origem, fps_valido, timestamp_do_quadro
+from state import (
+    atualizar_historico_e_calcular,
+    atualizar_zonas,
+    calcular_riscos,
+    calcular_tendencias,
+    atualizar_presenca_motos,
+)
+from config import HISTORICO_MAX_POSICOES, MIN_FRAMES_PRESENCA_MOTO, FPS_PADRAO
+
+JANELA_VIDEO = "Deteccao - Video/Webcam"
+JANELA_IMAGEM = "Deteccao - Imagem"
 
 
 def is_image_file(path):
@@ -51,7 +62,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Detecção e rastreamento de motos no trânsito")
     parser.add_argument(
         "--source", required=True,
-        help="Caminho do vídeo/imagem, ou '0' para webcam"
+        help="Caminho do vídeo/imagem, '0' para webcam, ou URL rtsp/http de câmera"
+    )
+    parser.add_argument(
+        "--origem", default=None,
+        help="Nome amigável do vídeo/câmera salvo no banco e usado no filtro do dashboard "
+             "(padrão: nome do arquivo, sem a pasta). Máx. 255 caracteres."
     )
     parser.add_argument(
         "--no-display", action="store_true",
@@ -59,7 +75,7 @@ def parse_args():
     )
     parser.add_argument(
         "--batch-size", type=int, default=30,
-        help="Quantidade de frames processados antes de salvar no banco (padrão: 30)"
+        help="Quantidade de registros acumulados antes de salvar no banco (padrão: 30)"
     )
     parser.add_argument(
         "--calib-p1", default=None,
@@ -80,15 +96,20 @@ def parse_args():
     args = parser.parse_args()
 
     # "0" vindo da linha de comando deve virar webcam (int), não string
-    source = 0 if args.source == "0" else args.source
+    source = int(args.source) if args.source.strip().isdigit() else args.source
     escala = parse_calibracao(args.calib_p1, args.calib_p2, args.calib_dist)
     if escala is None:
         print("⚠️  Sem calibração (--calib-p1/--calib-p2/--calib-dist não informados). "
-              "Velocidade não será calculada; distância ficará em pixels.")
+              "Velocidade e tendência (mudança brusca/aproximação rápida) não serão "
+              "calculadas; distância ficará em pixels.")
     zonas = carregar_zonas(args.zonas)
     if not zonas:
         print("⚠️  Sem zonas de risco configuradas (--zonas não informado).")
-    return source, args.no_display, args.batch_size, escala, zonas
+    origem = nome_origem(source, args.origem)
+    if args.origem and len(args.origem.strip()) > len(origem):
+        print(f"⚠️  --origem tinha mais de {len(origem)} caracteres e foi cortado.")
+    print(f"🎥 Origem registrada no banco: {origem}")
+    return source, origem, args.no_display, args.batch_size, escala, zonas
 
 
 CORES_NIVEL = {
@@ -98,6 +119,14 @@ CORES_NIVEL = {
 }
 
 
+def janela_fechada(nome):
+    """True se o usuário fechou a janela pelo botão X."""
+    try:
+        return cv2.getWindowProperty(nome, cv2.WND_PROP_VISIBLE) < 1
+    except cv2.error:
+        return True  # janela já destruída
+
+
 def desenhar(frame, objetos, velocidades, zonas_atuais, zonas, analises, total_motos):
     analises_por_track = {a["track_id"]: a for a in analises}
 
@@ -105,7 +134,8 @@ def desenhar(frame, objetos, velocidades, zonas_atuais, zonas, analises, total_m
     for zona in zonas:
         pts = np.array([(int(x), int(y)) for x, y in zona["poligono"]])
         cv2.polylines(frame, [pts], True, (0, 0, 255), 2)
-        cv2.putText(frame, zona["nome"], tuple(pts[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        cv2.putText(frame, zona["nome"], tuple(int(v) for v in pts[0]),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
     for obj in objetos:
         x1, y1, x2, y2 = map(int, obj["bbox"])
@@ -129,19 +159,40 @@ def desenhar(frame, objetos, velocidades, zonas_atuais, zonas, analises, total_m
     return frame
 
 
-def processar_frame(frame, model, contagem_frames_motos, historico, escala, zonas, zona_por_track, estado_condicoes):
-    objetos, res = detectar_e_rastrear(frame, model)
+def novo_estado():
+    """Tudo que precisa persistir entre quadros do mesmo vídeo."""
+    return {
+        "contagem_frames_motos": defaultdict(int),
+        "historico": defaultdict(lambda: deque(maxlen=HISTORICO_MAX_POSICOES)),
+        "historico_distancias": defaultdict(lambda: deque(maxlen=HISTORICO_MAX_POSICOES)),
+        "zona_por_track": {},
+        "condicoes": {},
+    }
 
-    ts = datetime.now()
-    velocidades, distancias = atualizar_historico_e_calcular(objetos, historico, escala, ts)
-    zonas_atuais, entradas_zona = atualizar_zonas(objetos, zonas, zona_por_track)
+
+def processar_frame(frame, model, ts, estado, escala, zonas):
+    """
+    Processa um quadro. `ts` é o tempo do quadro (tempo do vídeo em arquivos,
+    relógio ao vivo em webcam/stream — ver fonte.timestamp_do_quadro).
+    """
+    objetos, _ = detectar_e_rastrear(frame, model)
+
+    vizinhos = {}
+    velocidades, distancias = atualizar_historico_e_calcular(
+        objetos, estado["historico"], escala, ts, vizinhos
+    )
+    tendencias = calcular_tendencias(
+        objetos, estado["historico"], distancias, vizinhos,
+        estado["historico_distancias"], escala, ts,
+    )
+    zonas_atuais, entradas_zona = atualizar_zonas(objetos, zonas, estado["zona_por_track"], ts)
     analises, entradas_condicoes = calcular_riscos(
-        objetos, velocidades, distancias, zonas_atuais, estado_condicoes
+        objetos, velocidades, distancias, zonas_atuais, estado["condicoes"], tendencias, ts
     )
     entradas = entradas_zona + entradas_condicoes
 
     # completa velocidade/distância nos eventos de entrada em zona (calcular_riscos
-    # já preenche isso para velocidade_elevada/proximidade_perigosa)
+    # já preenche isso para os demais eventos)
     for evento in entradas_zona:
         evento["speed_estimated"] = velocidades.get(evento["track_id"])
         evento["distance"] = distancias.get(evento["track_id"])
@@ -161,15 +212,16 @@ def processar_frame(frame, model, contagem_frames_motos, historico, escala, zona
     ]
 
     # só conta como "moto confirmada" quem já apareceu MIN_FRAMES_PRESENCA_MOTO
-    # vezes — descoberto ao rodar com vídeo real: sem isso, ruído de 1 frame
-    # (falso positivo isolado / troca de ID) infla a contagem total
-    motos_confirmadas = atualizar_presenca_motos(objetos, contagem_frames_motos, MIN_FRAMES_PRESENCA_MOTO)
+    # vezes — sem isso, ruído de 1 quadro (falso positivo / troca de ID) infla a contagem
+    motos_confirmadas = atualizar_presenca_motos(
+        objetos, estado["contagem_frames_motos"], MIN_FRAMES_PRESENCA_MOTO
+    )
 
     return objetos, registros, velocidades, zonas_atuais, entradas, analises, motos_confirmadas
 
 
 def main():
-    source, no_display, batch_size, escala, zonas = parse_args()
+    source, origem, no_display, batch_size, escala, zonas = parse_args()
 
     conn = db.conectar()
     db.garantir_schema(conn)
@@ -177,14 +229,25 @@ def main():
 
     model = carregar_modelo()
 
-    contagem_frames_motos = defaultdict(int)
+    estado = novo_estado()
     motos_confirmadas = set()
-    buffer_registros = []
-    buffer_eventos = []
-    buffer_analises = []
-    historico = defaultdict(lambda: deque(maxlen=HISTORICO_MAX_POSICOES))
-    zona_por_track = {}
-    estado_condicoes = {}
+    buffers = {"registros": [], "eventos": [], "analises": []}
+
+    def salvar(forcar=False):
+        if buffers["registros"] and (forcar or len(buffers["registros"]) >= batch_size):
+            db.salvar_deteccoes(conn, origem, buffers["registros"])
+            buffers["registros"] = []
+        if buffers["eventos"]:
+            db.salvar_eventos(conn, buffers["eventos"], origem)
+            buffers["eventos"] = []
+        if buffers["analises"] and (forcar or len(buffers["analises"]) >= batch_size):
+            db.salvar_analises_risco(conn, buffers["analises"], origem)
+            buffers["analises"] = []
+
+    def acumular(registros, entradas, analises):
+        buffers["registros"].extend(registros)
+        buffers["eventos"].extend(entradas)
+        buffers["analises"].extend(analises)
 
     try:
         if is_image_file(source):
@@ -192,16 +255,17 @@ def main():
             if frame is None:
                 print("❌ Erro: imagem não encontrada.")
                 return
-            objetos, registros, velocidades, zonas_atuais, entradas, analises, motos_confirmadas = processar_frame(
-                frame, model, contagem_frames_motos, historico, escala, zonas, zona_por_track, estado_condicoes
-            )
-            buffer_registros.extend(registros)
-            buffer_eventos.extend(entradas)
-            buffer_analises.extend(analises)
+            objetos, registros, velocidades, zonas_atuais, entradas, analises, motos_confirmadas = \
+                processar_frame(frame, model, datetime.now(), estado, escala, zonas)
+            acumular(registros, entradas, analises)
             frame = desenhar(frame, objetos, velocidades, zonas_atuais, zonas, analises, len(motos_confirmadas))
             if not no_display:
-                cv2.imshow("Detecção - Imagem", frame)
-                cv2.waitKey(0)
+                cv2.imshow(JANELA_IMAGEM, frame)
+                # espera 'q'/ESC ou o X da janela (waitKey(0) sozinho ignora o X)
+                while True:
+                    tecla = cv2.waitKey(100) & 0xFF
+                    if tecla in (ord("q"), 27) or janela_fechada(JANELA_IMAGEM):
+                        break
                 cv2.destroyAllWindows()
         else:
             cap = cv2.VideoCapture(source)
@@ -209,50 +273,49 @@ def main():
                 print("❌ Erro ao abrir vídeo/webcam.")
                 return
 
-            frame_count = 0
+            ao_vivo = eh_fonte_ao_vivo(source)
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if ao_vivo:
+                print("⏱️  Fonte ao vivo: tempo de cada quadro = relógio do computador.")
+            else:
+                if not fps_valido(fps):
+                    print(f"⚠️  O arquivo não informa FPS; usando FPS_PADRAO={FPS_PADRAO}.")
+                    fps = FPS_PADRAO
+                print(f"⏱️  Arquivo de vídeo: tempo de cada quadro = quadro ÷ {fps:.2f} fps "
+                      "(independe da velocidade de processamento).")
+            inicio = datetime.now()
+
+            indice_quadro = 0
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
 
-                objetos, registros, velocidades, zonas_atuais, entradas, analises, motos_confirmadas = processar_frame(
-                    frame, model, contagem_frames_motos, historico, escala, zonas, zona_por_track, estado_condicoes
-                )
-                buffer_registros.extend(registros)
-                buffer_eventos.extend(entradas)
-                buffer_analises.extend(analises)
-                frame_count += 1
+                ts = timestamp_do_quadro(indice_quadro, fps, inicio, ao_vivo)
+                objetos, registros, velocidades, zonas_atuais, entradas, analises, motos_confirmadas = \
+                    processar_frame(frame, model, ts, estado, escala, zonas)
+                acumular(registros, entradas, analises)
+                indice_quadro += 1
 
                 if not no_display:
-                    frame = desenhar(frame, objetos, velocidades, zonas_atuais, zonas, analises, len(motos_confirmadas))
-                    cv2.imshow("Deteccao - Video/Webcam", frame)
+                    frame = desenhar(frame, objetos, velocidades, zonas_atuais, zonas, analises,
+                                     len(motos_confirmadas))
+                    cv2.imshow(JANELA_VIDEO, frame)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
-                       break
-                    if cv2.getWindowProperty("Deteccao - Video/Webcam", cv2.WND_PROP_VISIBLE) < 1:
-                       break
-                if len(buffer_registros) >= batch_size:
-                    db.salvar_deteccoes(conn, str(source), buffer_registros)
-                    buffer_registros = []
-                if buffer_eventos:
-                    db.salvar_eventos(conn, buffer_eventos)
-                    buffer_eventos = []
-                if buffer_analises:
-                    db.salvar_analises_risco(conn, buffer_analises)
-                    buffer_analises = []
+                        break
+                    if janela_fechada(JANELA_VIDEO):  # botão X
+                        break
+
+                salvar()
 
             cap.release()
             if not no_display:
                 cv2.destroyAllWindows()
 
-        # flush final
-        if buffer_registros:
-            db.salvar_deteccoes(conn, str(source), buffer_registros)
-        if buffer_eventos:
-            db.salvar_eventos(conn, buffer_eventos)
-        if buffer_analises:
-            db.salvar_analises_risco(conn, buffer_analises)
+        salvar(forcar=True)  # flush final
 
-        print(f"💾 Total de motos confirmadas (>= {MIN_FRAMES_PRESENCA_MOTO} frames de presença): {len(motos_confirmadas)}")
+        print(f"💾 Total de motos confirmadas (>= {MIN_FRAMES_PRESENCA_MOTO} quadros de presença): "
+              f"{len(motos_confirmadas)}")
 
     finally:
         conn.close()

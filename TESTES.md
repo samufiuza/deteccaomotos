@@ -8,7 +8,7 @@ Os testes se dividem em três categorias, porque exigem coisas diferentes:
 | **Funcional/visual (manual)** | Detecção e tracking em vídeo/imagem reais | YOLO instalado + `moto_teste.jpg` / `vídeo_moto.mp4` | No ambiente de vocês (local, com GPU se tiver) |
 | **Integração** | Pipeline ponta a ponta + persistência no banco | Tudo acima + PostgreSQL rodando | No ambiente de vocês |
 
-A pasta `tests/` já traz os testes unitários prontos e passando (15/15). Os demais são passo a passo manual, porque não têm uma "resposta certa" objetiva — dependem de comparação com a realidade do vídeo.
+A pasta `tests/` já traz os testes unitários prontos e passando (117/117). Os demais são passo a passo manual, porque não têm uma "resposta certa" objetiva — dependem de comparação com a realidade do vídeo.
 
 ---
 
@@ -26,9 +26,22 @@ python -m pytest tests/ -v
 - Sem calibração: velocidade deve retornar `None` (não deve inventar um número), distância deve cair para pixels.
 - Propriedades matemáticas: distância(A, B) == distância(B, A); distância de um ponto a ele mesmo é 0.
 
-**Critério de sucesso:** os 15 testes passam. Se vocês alterarem a fórmula de `calcular_velocidade` ou `calcular_distancia` no futuro, rodem de novo — é o que evita que uma mudança quebre algo que já funcionava (regressão).
+**Critério de sucesso:** os 117 testes passam. Se vocês alterarem a fórmula de `calcular_velocidade` ou `calcular_distancia` no futuro, rodem de novo — é o que evita que uma mudança quebre algo que já funcionava (regressão).
 
 **Quando rodar:** toda vez que mexer em `calibration.py` ou `risk.py`, antes de testar com vídeo real. Se um teste quebrar aqui, o problema é matemático — não adianta ir direto pro vídeo tentar descobrir o que está errado.
+
+**Arquivos de teste:**
+
+| Arquivo | Cobre |
+|---|---|
+| `test_calibration.py`, `test_risk.py` | calibração, velocidade, distância |
+| `test_risk_zonas.py`, `test_state.py` | point-in-polygon e transições de zona |
+| `test_score.py`, `test_state_riscos.py` | eventos ativos, score e debounce de eventos |
+| `test_tendencia.py` | `mudanca_brusca` (curva, freada, tremor) e `aproximacao_rapida` (troca de vizinho) |
+| `test_distancia_filtro.py` | pedestres, bicicletas e objetos parados fora do cálculo de distância |
+| `test_fonte.py` | tempo do quadro (quadro ÷ fps x relógio ao vivo) e nome da origem (≤ 255, sem senha) |
+| `test_presenca_motos.py` | filtro de presença mínima de motos |
+| `test_dashboard_queries.py` | consultas do dashboard, inclusive filtro por vídeo (origem) |
 
 ---
 

@@ -25,14 +25,16 @@ CREATE TABLE eventos (
     severity TEXT,
     speed_estimated REAL,
     distance REAL,
-    zona TEXT
+    zona TEXT,
+    origem_video TEXT
 );
 CREATE TABLE analise_risco (
     id INTEGER PRIMARY KEY,
     track_id INTEGER,
     timestamp TEXT,
     risk_score INTEGER,
-    risk_level TEXT
+    risk_level TEXT,
+    origem_video TEXT
 );
 """
 
@@ -45,11 +47,12 @@ def conn():
     conn.close()
 
 
-def _inserir_deteccao(conn, track_id, vehicle_type, speed=None, nearest=None, x=0, y=0):
+def _inserir_deteccao(conn, track_id, vehicle_type, speed=None, nearest=None, x=0, y=0, origem=None):
     conn.execute(
-        "INSERT INTO deteccoes (timestamp, track_id, vehicle_type, confidence, x, y, speed_estimated, nearest_distance) "
-        "VALUES ('2026-01-01 00:00:00', ?, ?, 0.9, ?, ?, ?, ?)",
-        (track_id, vehicle_type, x, y, speed, nearest),
+        "INSERT INTO deteccoes (timestamp, origem_video, track_id, vehicle_type, confidence, x, y, "
+        "speed_estimated, nearest_distance) "
+        "VALUES ('2026-01-01 00:00:00', ?, ?, ?, 0.9, ?, ?, ?, ?)",
+        (origem, track_id, vehicle_type, x, y, speed, nearest),
     )
 
 
@@ -134,3 +137,54 @@ def test_posicoes_para_mapa_calor(conn):
     posicoes = dq.posicoes_para_mapa_calor(conn, vehicle_type="motorcycle")
     assert len(posicoes) == 2
     assert {(p["x"], p["y"]) for p in posicoes} == {(10, 20), (30, 40)}
+
+
+# ---- filtro por origem (vídeo) ----
+
+def _popular_dois_videos(conn):
+    for _ in range(3):
+        _inserir_deteccao(conn, 1, "motorcycle", speed=10.0, origem="congestionamento.mp4")
+        _inserir_deteccao(conn, 1, "motorcycle", speed=50.0, origem="avenida.mp4")  # mesmo track_id, outro vídeo
+    _inserir_deteccao(conn, 2, "car", origem="avenida.mp4")
+    conn.execute("INSERT INTO eventos (track_id, event_type, timestamp, origem_video) "
+                 "VALUES (1, 'proximidade_perigosa', '2026-01-01', 'congestionamento.mp4')")
+    conn.execute("INSERT INTO eventos (track_id, event_type, timestamp, origem_video) "
+                 "VALUES (1, 'velocidade_elevada', '2026-01-01', 'avenida.mp4')")
+    conn.execute("INSERT INTO analise_risco (track_id, timestamp, risk_score, risk_level, origem_video) "
+                 "VALUES (1, '2026-01-01', 70, 'alto', 'avenida.mp4')")
+    conn.execute("INSERT INTO analise_risco (track_id, timestamp, risk_score, risk_level, origem_video) "
+                 "VALUES (1, '2026-01-01', 0, 'baixo', 'congestionamento.mp4')")
+    conn.commit()
+
+
+def test_listar_origens(conn):
+    _popular_dois_videos(conn)
+    assert dq.listar_origens(conn) == ["avenida.mp4", "congestionamento.mp4"]
+
+
+def test_kpis_filtrados_por_origem(conn):
+    _popular_dois_videos(conn)
+    kpis = dq.kpis_gerais(conn, min_frames_presenca_moto=3, origem="congestionamento.mp4")
+    assert kpis["total_deteccoes"] == 3
+    assert kpis["total_motos_confirmadas"] == 1
+    assert kpis["total_eventos"] == 1
+    assert kpis["eventos_alto_risco"] == 0
+    assert kpis["velocidade_media_kmh"] == pytest.approx(10.0)
+
+
+def test_motos_confirmadas_nao_misturam_track_id_de_videos_diferentes(conn):
+    _popular_dois_videos(conn)
+    kpis = dq.kpis_gerais(conn, min_frames_presenca_moto=3)
+    assert kpis["total_motos_confirmadas"] == 2  # moto #1 de cada vídeo
+
+
+def test_graficos_filtrados_por_origem(conn):
+    _popular_dois_videos(conn)
+    eventos = {e["event_type"]: e["total"] for e in dq.eventos_por_tipo(conn, origem="avenida.mp4")}
+    assert eventos == {"velocidade_elevada": 1}
+    risco = {d["risk_level"]: d["total"] for d in dq.distribuicao_risco(conn, origem="avenida.mp4")}
+    assert risco == {"alto": 1}
+    veiculos = {d["vehicle_type"]: d["total"] for d in dq.deteccoes_por_tipo_veiculo(conn, origem="avenida.mp4")}
+    assert veiculos == {"motorcycle": 1, "car": 1}
+    posicoes = dq.posicoes_para_mapa_calor(conn, origem="congestionamento.mp4")
+    assert len(posicoes) == 3

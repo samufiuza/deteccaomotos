@@ -58,14 +58,50 @@ LIMIAR_DISTANCIA_MINIMA_M = float(os.environ.get("LIMIAR_DISTANCIA_MINIMA_M", 2.
 
 # Pesos por tipo de evento ativo (somados para compor o score, máx. 100).
 # Espelha a tabela conceitual do prompt mestre do TCC (seção 10).
-# "mudanca_brusca" e "aproximacao_rapida" ainda não são detectados nesta
-# etapa — exigem análise de tendência ao longo do tempo, não só do frame
-# atual — ficam para uma próxima iteração.
+# Os cinco pesos somam exatamente 100: um veículo com todas as condições
+# ativas ao mesmo tempo atinge o score máximo.
 PESOS_RISCO = {
     "velocidade_elevada": 30,
     "proximidade_perigosa": 25,
     "zona_risco": 15,
+    "mudanca_brusca": 15,
+    "aproximacao_rapida": 15,
 }
+
+# ==== TENDÊNCIA (mudanca_brusca / aproximacao_rapida) ====
+# Ambos analisam a evolução ao longo dos últimos quadros, não só o atual,
+# e só são avaliados com calibração (precisam de metros, não pixels).
+# Quantos pontos recentes do histórico usar na análise de tendência.
+JANELA_TENDENCIA = int(os.environ.get("JANELA_TENDENCIA", 6))
+# Mudança de direção (graus) entre a 1ª e a 2ª metade da janela.
+LIMIAR_MUDANCA_DIRECAO_GRAUS = float(os.environ.get("LIMIAR_MUDANCA_DIRECAO_GRAUS", 45))
+# Variação de velocidade (m/s²) entre as duas metades — freada/arrancada brusca.
+# Frenagem forte de moto fica na faixa de 6-8 m/s².
+LIMIAR_ACELERACAO_M_S2 = float(os.environ.get("LIMIAR_ACELERACAO_M_S2", 6.0))
+# Deslocamento mínimo (m) em cada metade da janela para avaliar direção —
+# evita que o "tremor" da bounding box de um veículo quase parado vire curva.
+MIN_DESLOCAMENTO_DIRECAO_M = float(os.environ.get("MIN_DESLOCAMENTO_DIRECAO_M", 0.5))
+# Velocidade com que a distância ao vizinho mais próximo diminui (m/s).
+LIMIAR_APROXIMACAO_M_S = float(os.environ.get("LIMIAR_APROXIMACAO_M_S", 3.0))
+
+# ==== FILTRO DO CÁLCULO DE DISTÂNCIA ====
+# Classes que NÃO entram no cálculo de distância/proximidade: pedestres
+# (inclui manequins detectados como pessoa) e bicicletas (ex.: estacionadas).
+CLASSES_IGNORADAS_DISTANCIA = {"pedestrian", "bicycle"}
+# Objetos parados também são ignorados (carro estacionado, veículos travados
+# no congestionamento). "Parado" = velocidade abaixo do limiar abaixo.
+LIMIAR_PARADO_KMH = float(os.environ.get("LIMIAR_PARADO_KMH", 3.0))
+# Sem calibração não há km/h: usa deslocamento em pixels por segundo.
+LIMIAR_PARADO_PX_S = float(os.environ.get("LIMIAR_PARADO_PX_S", 20.0))
+# Mínimo de pontos no histórico para afirmar que um objeto está parado
+# (antes disso ele é tratado como em movimento — não há como saber).
+MIN_PONTOS_PARADO = int(os.environ.get("MIN_PONTOS_PARADO", 5))
+
+# ==== TEMPO DO QUADRO ====
+# Em arquivos de vídeo o tempo de cada quadro é quadro ÷ fps (tempo do vídeo),
+# independente da velocidade de processamento. Se o arquivo não informar o
+# fps, usa este valor padrão.
+FPS_PADRAO = float(os.environ.get("FPS_PADRAO", 30))
 
 # Faixas de classificação do score (0-100)
 NIVEIS_RISCO = [
