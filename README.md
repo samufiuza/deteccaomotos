@@ -6,7 +6,7 @@ Substitui `detectio_motos.py`, `detection.py` e `main.py` do projeto original.
 
 ```
 config.py            - configurações (modelo, classes, banco, limiares e pesos do score via env vars)
-calibration.py        - conversão pixel -> metros a partir de 2 pontos de referência
+calibration.py        - calibração: fator pixel->metro (simples) e HOMOGRAFIA (plano do chão, recomendada)
 detector.py           - detecção + tracking (YOLO + ByteTrack nativo do Ultralytics)
 risk.py               - velocidade, distância, zona, tendência (mudança brusca/aproximação rápida), parado, score
 state.py              - histórico de posições/distâncias, zonas, tendência e score por track_id (sem YOLO/banco)
@@ -41,9 +41,10 @@ A tabela `deteccoes` é criada automaticamente na primeira execução, caso não
 # vídeo, sem calibração (velocidade não é calculada, distância fica em pixels)
 python main.py --source vídeo_moto.mp4
 
-# vídeo, com calibração (recomendado)
-# marque na imagem dois pontos cuja distância real você conhece
-# (ex.: duas faixas de pedestre, largura de uma via) e informe:
+# vídeo, com calibração por HOMOGRAFIA (recomendado — ver "Como calibrar" abaixo)
+python main.py --source vídeo_moto.mp4 --calib-arquivo calibracao_resultado.json
+
+# calibração simples (um fator único; só serve para câmera quase de cima)
 python main.py --source vídeo_moto.mp4 \
     --calib-p1 "100,400" --calib-p2 "500,400" --calib-dist 8
 
@@ -88,15 +89,46 @@ Se o arquivo não informar o FPS, usa `FPS_PADRAO` (30).
 
 ### Como calibrar
 
-1. Pause em um frame do vídeo (ex.: `cv2.imwrite` de um frame, ou um player qualquer).
-2. Identifique dois pontos na imagem cuja distância real no mundo você conhece
-   (ex.: início e fim de uma faixa de pedestres — geralmente ~3-4m; largura de
-   uma pista — geralmente ~3m; postes com espaçamento conhecido).
-3. Anote as coordenadas (x, y) em pixels desses dois pontos e a distância real em metros.
-4. Passe em `--calib-p1`, `--calib-p2`, `--calib-dist`.
+**Por que homografia.** O fator único (`--calib-p1/p2/dist`) assume a mesma escala
+em toda a imagem e em todas as direções. Numa câmera inclinada isso falha: o mesmo
+objeto vale menos pixels ao fundo, e deslocamentos ao longo da via encolhem
+(escorço) muito mais que a largura. Calibrar com a largura de uma pista e usar esse
+fator para velocidade subestima a velocidade — numa simulação com câmera a 8 m de
+altura e 35° de inclinação, o erro foi de cerca de 20% (perto) a 80% (longe) para
+baixo (ver `tests/test_state_homografia.py`). A homografia usa 4 pontos do chão e
+corrige a perspectiva; velocidade e distância passam a ser medidas no plano do chão,
+no ponto de contato do veículo (base da caixa), em metros.
 
-A escala assume que a câmera tem pouca inclinação/perspectiva — é uma aproximação
-que deve ser explicitada como limitação no TCC.
+**Passo a passo (ferramenta de clique):**
+
+1. Escolha um quadro nítido (para stream ao vivo, salve um quadro `.jpg` na
+   resolução original; não use print da janela).
+2. Escolha 4 pontos NO CHÃO que formem um retângulo real, com largura e comprimento
+   que você consiga medir (Google Maps em satélite, ou medidas padrão da via).
+   Quanto MAIOR o retângulo e quanto mais ele cobrir por onde os veículos passam,
+   melhor. Numa simulação (câmera sintética, só erro de clique de ±2 px, medidas
+   reais perfeitas), o erro mediano dentro da área calibrada ficou em 1–2%; medindo
+   bem além da borda mais distante do retângulo, subiu para cerca de 3–4% com um
+   retângulo grande (3,5 × 20 m) e 5–10% com um pequeno (3,5 × 8 m), com casos de
+   10–30%. Com erro de clique de ±5 px tudo piora. Erros nas medidas reais
+   (Google Maps, valores padrão) somam-se a esses.
+3. `python ferramenta_calibracao.py --source quadro.jpg --saida calibracao_resultado.json`
+4. Tecla `h`, clique P1 perto-esq, P2 perto-dir, P3 longe-dir, P4 longe-esq; tecla `k`;
+   digite largura (P1→P2) e comprimento (P2→P3) em metros.
+5. Confira a grade (`g`): as linhas devem ficar paralelas às bordas e faixas da rua.
+6. **Valide** (`v`): meça uma distância que você conheça e que NÃO usou na calibração
+   (ex.: outra largura de pista). Se o erro passar de uns 5–10%, refaça os pontos.
+7. `q` salva. Rode: `python main.py --source video.mp4 --calib-arquivo calibracao_resultado.json`
+   (o mesmo arquivo guarda as zonas: acrescente `--zonas calibracao_resultado.json`).
+
+A calibração vale para UMA câmera numa posição fixa. Se a câmera mexer, recalibre. Se
+o vídeo tiver resolução diferente da usada na calibração (mesma proporção), o sistema
+ajusta a matriz automaticamente; se a proporção mudar, ele avisa e pede recalibração.
+
+**Limitações a declarar no TCC:** a homografia vale só para o plano do chão (ruas com
+rampa/declive degradam); depende da precisão dos cliques e das medidas reais; a base da
+caixa do detector é uma aproximação do ponto de contato (sombras, oclusões e caixas
+cortadas na borda aumentam o erro); fora da área calibrada o erro cresce.
 
 ### Como configurar zonas de risco
 
@@ -139,6 +171,11 @@ Analisam os últimos `JANELA_TENDENCIA` quadros (padrão 6) e **só funcionam co
 - `aproximacao_rapida`: a distância ao vizinho mais próximo cai a ≥ `LIMIAR_APROXIMACAO_M_S`
   (3 m/s). Só conta enquanto o vizinho for o **mesmo** veículo (troca de vizinho não é aproximação).
 
+**Com homografia (`--calib-arquivo`)**, o histórico de posições, a distância, os parados e a
+tendência passam a ser medidos em metros no plano do chão (ponto de contato do veículo),
+e não mais em pixels com escala única — a direção de uma curva, por exemplo, deixa de ser
+distorcida pela perspectiva.
+
 ### Filtro do cálculo de distância
 
 Ficam fora do cálculo de distância/proximidade (nem como alvo, nem como vizinho):
@@ -154,7 +191,7 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-117 testes cobrindo calibração, velocidade, distância, point-in-polygon, transições de zona, detecção de eventos de risco, score (inclusive fronteiras exatas 29/30 e 59/60), tendência (mudança brusca e aproximação rápida), tempo do quadro e nome da origem, filtro de pedestres/bicicletas/parados na distância, filtro de presença mínima de motos e as consultas do dashboard (inclusive o filtro por vídeo) (testadas com sqlite como substituto portável do Postgres). Veja `TESTES.md` para o guia completo, incluindo os testes manuais que precisam do YOLO/vídeo real.
+171 testes cobrindo calibração (simples e por homografia: matemática, ajuste de resolução, integração com o pipeline e ferramenta de clique), velocidade, distância, point-in-polygon, transições de zona, detecção de eventos de risco, score (inclusive fronteiras exatas 29/30 e 59/60), tendência (mudança brusca e aproximação rápida), tempo do quadro e nome da origem, filtro de pedestres/bicicletas/parados na distância, filtro de presença mínima de motos e as consultas do dashboard (inclusive o filtro por vídeo) (testadas com sqlite como substituto portável do Postgres). Veja `TESTES.md` para o guia completo, incluindo os testes manuais que precisam do YOLO/vídeo real.
 
 ## Validação com vídeo real
 
@@ -164,7 +201,7 @@ Rodado com o `vídeo_moto.mp4` e `yolov8m.pt` reais do projeto (450 frames, banc
 - **Correção aplicada:** `MIN_FRAMES_PRESENCA_MOTO` (padrão 3) — só conta como moto confirmada quem aparece nesse mínimo de frames. Resultado: **7 motos confirmadas** de 10 IDs brutos, os 3 de ruído corretamente descartados.
 - **Desempenho:** ~0,44s/frame (2,3 FPS) em CPU sem GPU — considerar isso na seção de desempenho do TCC; em GPU deve ser bem mais rápido.
 - **Cenário do vídeo:** congestionamento (trânsito parado/lento). Velocidades ficaram próximas de 0 (esperado), e 181 eventos de `proximidade_perigosa` foram gerados (veículos muito próximos uns dos outros, comum em engarrafamento). Nenhum evento `velocidade_elevada` — coerente com o cenário.
-- **⚠️ Refazer:** essa rodada usou o relógio do computador como tempo do quadro (velocidades ~13x menores) e contava veículos parados na proximidade. Com as correções desta versão, rodar de novo com `--origem congestionamento` — a expectativa é que a maior parte dos 181 eventos de `proximidade_perigosa` desapareça (veículos parados agora são ignorados).
+- **⚠️ Refazer:** essa rodada usou como escala a largura de uma faixa (escala única, que subestima a velocidade ao longo da via em câmera inclinada — ver "Como calibrar") e o relógio do computador como tempo do quadro (velocidades ~13x menores) e contava veículos parados na proximidade. Com as correções desta versão, rodar de novo com `--origem congestionamento` — a expectativa é que a maior parte dos 181 eventos de `proximidade_perigosa` desapareça (veículos parados agora são ignorados).
 - **Nível de risco:** 8630/8630 registros em "baixo" — esperado, já que `proximidade_perigosa` sozinha (peso 25) não atinge o limiar de "médio" (30). Para ver níveis mais altos, é necessário configurar zonas de risco (`--zonas`) ou usar um vídeo com trânsito fluindo mais rápido.
 
 ## Dashboard
@@ -181,4 +218,4 @@ A lógica de consulta (`dashboard_queries.py`) é separada da interface (`dashbo
 
 ## Próxima etapa
 
-Calibração com referências reais da cena e novos vídeos/demonstrações (inclusive refazer o teste do congestionamento com o tempo do vídeo). O MVP do prompt mestre do TCC está completo: YOLO → Tracking → Velocidade → Distância → Zona de risco → Tendência → Score → PostgreSQL → Dashboard.
+Calibrar por homografia as câmeras/vídeos usados e refazer o teste do congestionamento (tempo do vídeo + homografia); novos vídeos/demonstrações. O MVP do prompt mestre do TCC está completo: YOLO → Tracking → Velocidade → Distância → Zona de risco → Tendência → Score → PostgreSQL → Dashboard.

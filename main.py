@@ -6,6 +6,7 @@ Persistência.
 Uso:
     python main.py --source caminho/para/video.mp4
     python main.py --source caminho/para/video.mp4 --origem "congestionamento_av_x"
+    python main.py --source video.mp4 --calib-arquivo calibracao_resultado.json   # homografia
     python main.py --source caminho/para/imagem.jpg
     python main.py --source 0              # webcam
     python main.py --source video.mp4 --no-display   # sem abrir janela (ex.: servidor)
@@ -29,7 +30,7 @@ import numpy as np
 
 import db
 from detector import carregar_modelo, detectar_e_rastrear
-from calibration import parse_calibracao
+from calibration import parse_calibracao, carregar_calibracao, reescalar_homografia, projetar_objetos
 from fonte import eh_fonte_ao_vivo, nome_origem, fps_valido, timestamp_do_quadro
 from state import (
     atualizar_historico_e_calcular,
@@ -90,6 +91,11 @@ def parse_args():
         help="Distância real, em metros, entre os pontos --calib-p1 e --calib-p2"
     )
     parser.add_argument(
+        "--calib-arquivo", default=None,
+        help="JSON de calibração por homografia (gerado pela ferramenta_calibracao, tecla h). "
+             "Tem prioridade sobre --calib-p1/--calib-p2/--calib-dist"
+    )
+    parser.add_argument(
         "--zonas", default=None,
         help="Caminho para o JSON de zonas de risco (ver zonas_exemplo.json)"
     )
@@ -98,9 +104,19 @@ def parse_args():
     # "0" vindo da linha de comando deve virar webcam (int), não string
     source = int(args.source) if args.source.strip().isdigit() else args.source
     escala = parse_calibracao(args.calib_p1, args.calib_p2, args.calib_dist)
-    if escala is None:
-        print("⚠️  Sem calibração (--calib-p1/--calib-p2/--calib-dist não informados). "
-              "Velocidade e tendência (mudança brusca/aproximação rápida) não serão "
+    calib_chao = None
+    if args.calib_arquivo:
+        try:
+            calib_chao = carregar_calibracao(args.calib_arquivo)
+        except (OSError, ValueError) as e:
+            parser.error(f"Calibração por homografia inválida: {e}")
+        if escala is not None:
+            print("ℹ️  --calib-arquivo informado: a calibração por homografia tem prioridade "
+                  "sobre --calib-p1/--calib-p2/--calib-dist.")
+        print("✅ Calibração por homografia carregada (velocidade e distância no plano do chão).")
+    elif escala is None:
+        print("⚠️  Sem calibração (--calib-arquivo ou --calib-p1/--calib-p2/--calib-dist não "
+              "informados). Velocidade e tendência (mudança brusca/aproximação rápida) não serão "
               "calculadas; distância ficará em pixels.")
     zonas = carregar_zonas(args.zonas)
     if not zonas:
@@ -109,7 +125,7 @@ def parse_args():
     if args.origem and len(args.origem.strip()) > len(origem):
         print(f"⚠️  --origem tinha mais de {len(origem)} caracteres e foi cortado.")
     print(f"🎥 Origem registrada no banco: {origem}")
-    return source, origem, args.no_display, args.batch_size, escala, zonas
+    return source, origem, args.no_display, args.batch_size, escala, zonas, calib_chao
 
 
 CORES_NIVEL = {
@@ -170,20 +186,51 @@ def novo_estado():
     }
 
 
-def processar_frame(frame, model, ts, estado, escala, zonas):
+def preparar_homografia(calib_chao, frame):
+    """
+    Ajusta a homografia carregada à resolução real do vídeo (chamada uma vez,
+    no primeiro quadro). Retorna H (numpy 3x3) ou None se não houver
+    calibração por homografia. Levanta ValueError se a proporção da imagem
+    mudou em relação à da calibração (nesse caso é preciso recalibrar).
+    """
+    if calib_chao is None:
+        return None
+    H, resolucao_calib = calib_chao
+    altura, largura = frame.shape[:2]
+    if (largura, altura) != tuple(resolucao_calib):
+        print(f"ℹ️  Resolução do vídeo ({largura}x{altura}) difere da calibração "
+              f"({resolucao_calib[0]}x{resolucao_calib[1]}); ajustando a homografia.")
+        H = reescalar_homografia(H, resolucao_calib, (largura, altura))
+    return H
+
+
+def processar_frame(frame, model, ts, estado, escala, zonas, H_chao=None):
     """
     Processa um quadro. `ts` é o tempo do quadro (tempo do vídeo em arquivos,
     relógio ao vivo em webcam/stream — ver fonte.timestamp_do_quadro).
+
+    H_chao: homografia (imagem -> plano do chão, em metros) já ajustada à
+    resolução do vídeo (ver preparar_homografia), ou None. Com ela, a posição
+    de cada veículo é a do ponto de contato com o chão, em metros (mx, my), e
+    velocidade, distância e tendência passam a ser medidas no plano do chão;
+    sem ela, valem pixels + escala, como antes.
     """
     objetos, _ = detectar_e_rastrear(frame, model)
 
+    # no plano do chão o histórico guarda metros, então a escala efetiva é 1,0
+    escala_calculo = escala
+    if H_chao is not None:
+        projetar_objetos(objetos, H_chao)
+        escala_calculo = 1.0
+
     vizinhos = {}
     velocidades, distancias = atualizar_historico_e_calcular(
-        objetos, estado["historico"], escala, ts, vizinhos
+        objetos, estado["historico"], escala, ts, vizinhos,
+        usar_plano_chao=H_chao is not None,
     )
     tendencias = calcular_tendencias(
         objetos, estado["historico"], distancias, vizinhos,
-        estado["historico_distancias"], escala, ts,
+        estado["historico_distancias"], escala_calculo, ts,
     )
     zonas_atuais, entradas_zona = atualizar_zonas(objetos, zonas, estado["zona_por_track"], ts)
     analises, entradas_condicoes = calcular_riscos(
@@ -221,7 +268,7 @@ def processar_frame(frame, model, ts, estado, escala, zonas):
 
 
 def main():
-    source, origem, no_display, batch_size, escala, zonas = parse_args()
+    source, origem, no_display, batch_size, escala, zonas, calib_chao = parse_args()
 
     conn = db.conectar()
     db.garantir_schema(conn)
@@ -255,8 +302,13 @@ def main():
             if frame is None:
                 print("❌ Erro: imagem não encontrada.")
                 return
+            try:
+                H_chao = preparar_homografia(calib_chao, frame)
+            except ValueError as e:
+                print(f"❌ {e}")
+                return
             objetos, registros, velocidades, zonas_atuais, entradas, analises, motos_confirmadas = \
-                processar_frame(frame, model, datetime.now(), estado, escala, zonas)
+                processar_frame(frame, model, datetime.now(), estado, escala, zonas, H_chao=H_chao)
             acumular(registros, entradas, analises)
             frame = desenhar(frame, objetos, velocidades, zonas_atuais, zonas, analises, len(motos_confirmadas))
             if not no_display:
@@ -286,14 +338,22 @@ def main():
             inicio = datetime.now()
 
             indice_quadro = 0
+            H_chao = None
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
 
+                if indice_quadro == 0:
+                    try:
+                        H_chao = preparar_homografia(calib_chao, frame)
+                    except ValueError as e:
+                        print(f"❌ {e}")
+                        break
+
                 ts = timestamp_do_quadro(indice_quadro, fps, inicio, ao_vivo)
                 objetos, registros, velocidades, zonas_atuais, entradas, analises, motos_confirmadas = \
-                    processar_frame(frame, model, ts, estado, escala, zonas)
+                    processar_frame(frame, model, ts, estado, escala, zonas, H_chao=H_chao)
                 acumular(registros, entradas, analises)
                 indice_quadro += 1
 

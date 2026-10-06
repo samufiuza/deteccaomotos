@@ -43,7 +43,8 @@ EVENTOS_TRANSICAO = (
 )
 
 
-def atualizar_historico_e_calcular(objetos, historico, escala, ts, vizinhos=None):
+def atualizar_historico_e_calcular(objetos, historico, escala, ts, vizinhos=None,
+                                    usar_plano_chao=False):
     """
     Atualiza o histórico de posições por track_id e calcula, para cada
     objeto: velocidade estimada e distância até o veículo mais próximo no
@@ -61,9 +62,25 @@ def atualizar_historico_e_calcular(objetos, historico, escala, ts, vizinhos=None
     ts: tempo do quadro (ver fonte.timestamp_do_quadro).
     vizinhos: dict opcional, preenchido com {track_id: track_id_do_vizinho_mais_proximo}
         (usado por calcular_tendencias para a aproximação rápida).
+    usar_plano_chao: se True (calibração por homografia, ver calibration.py), as
+        posições vêm de obj["mx"], obj["my"] — metros no plano do chão, no ponto
+        de contato do veículo — e `escala` é ignorada (as posições já estão em
+        metros, equivale a escala 1,0). O histórico passa a guardar metros, então
+        quem o consome depois (calcular_tendencias) deve receber escala 1,0.
+        Objetos sem projeção (mx/my None) ficam fora de todos os cálculos:
+        velocidade e distância None para eles.
 
     Retorna (velocidades: {track_id: km/h|None}, distancias: {track_id: metros|pixels|None})
     """
+    sem_projecao = []
+    if usar_plano_chao:
+        escala = 1.0
+        sem_projecao = [o for o in objetos if o.get("mx") is None or o.get("my") is None]
+        objetos = [
+            {**o, "x": o["mx"], "y": o["my"]}
+            for o in objetos if o.get("mx") is not None and o.get("my") is not None
+        ]
+
     for obj in objetos:
         if obj["track_id"] is None:
             continue
@@ -95,6 +112,10 @@ def atualizar_historico_e_calcular(objetos, historico, escala, ts, vizinhos=None
         distancias[obj_a["track_id"]] = menor
         if vizinhos is not None and obj_a["track_id"] is not None:
             vizinhos[obj_a["track_id"]] = vizinho
+
+    for obj in sem_projecao:
+        velocidades[obj["track_id"]] = None
+        distancias[obj["track_id"]] = None
 
     return velocidades, distancias
 
