@@ -243,7 +243,7 @@ def atualizar_zonas(objetos, zonas, zona_por_track, ts=None):
 
 
 def calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado_condicoes,
-                    tendencias=None, ts=None):
+                    tendencias=None, ts=None, distancia_em_metros=True):
     """
     Para cada objeto rastreado: detecta as condições de risco ativas AGORA
     (velocidade elevada, proximidade perigosa, zona de risco, mudança brusca,
@@ -256,6 +256,10 @@ def calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado_condi
         entre chamadas.
     tendencias: saída de calcular_tendencias (opcional).
     ts: tempo do quadro (padrão: datetime.now()).
+    distancia_em_metros: False quando não há calibração (a distância está em
+        pixels). Pixels não são comparáveis ao limiar em metros, então nesse caso
+        a distância é ignorada para evento/score (proximidade_perigosa não é
+        avaliada). Padrão True: quem já passa metros não precisa mudar nada.
 
     Retorna:
         analises: lista de dicts prontos para db.salvar_analises_risco
@@ -275,7 +279,7 @@ def calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado_condi
             continue
 
         velocidade = velocidades.get(tid)
-        distancia = distancias.get(tid)
+        distancia = distancias.get(tid) if distancia_em_metros else None
         zona = zonas_atuais.get(tid)
         tendencia = tendencias.get(tid, {})
 

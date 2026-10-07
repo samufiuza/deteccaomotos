@@ -149,7 +149,7 @@ cortadas na borda aumentam o erro); fora da área calibrada o erro cresce.
 - Sem senha nem caminho de vídeo hardcoded no código.
 - Tracking usa o ByteTrack nativo do Ultralytics (`tracker="bytetrack.yaml"`) em vez de reimplementar contagem manual de IDs.
 - Cada detecção é salva no banco com posição (x, y), velocidade estimada e distância até o veículo mais próximo no frame.
-- Velocidade e distância só são calculadas com calibração; sem ela, o sistema avisa e segue funcionando (distância cai para pixels, velocidade fica `None`).
+- Velocidade e distância só são calculadas com calibração; sem ela, o sistema avisa e segue funcionando (distância cai para pixels, velocidade fica `None`). A distância em pixels é só informativa: **não gera `proximidade_perigosa` nem entra no score**, porque pixels não são comparáveis ao limiar em metros.
 - Zonas de risco são configuráveis por JSON, sem precisar mexer no código; entrada em zona vira evento no banco.
 - Score de risco (0-100, baixo/médio/alto) combina velocidade elevada, proximidade perigosa e zona de risco, salvo por track_id na tabela `analise_risco`. Cada veículo é desenhado na tela com cor por nível de risco (verde/laranja/vermelho).
 - A lógica de histórico/zona/score vive em `state.py`, separada de `main.py`, para não depender de YOLO nem do banco — dá pra testar isoladamente.
@@ -206,7 +206,7 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-190 testes cobrindo calibração (simples e por homografia: matemática, ajuste de resolução, integração com o pipeline e ferramenta de clique), velocidade, distância, point-in-polygon, transições de zona, detecção de eventos de risco, score (inclusive fronteiras exatas 29/30 e 59/60), tendência (mudança brusca e aproximação rápida), tempo do quadro e nome da origem, filtro de pedestres/bicicletas/parados na distância (inclusive o modo `so_alvo`), filtro de presença mínima de motos e as consultas do dashboard (inclusive o filtro por vídeo) (testadas com sqlite como substituto portável do Postgres). Veja `TESTES.md` para o guia completo, incluindo os testes manuais que precisam do YOLO/vídeo real.
+196 testes cobrindo calibração (simples e por homografia: matemática, ajuste de resolução, integração com o pipeline e ferramenta de clique), velocidade, distância, point-in-polygon, transições de zona, detecção de eventos de risco, score (inclusive fronteiras exatas 29/30 e 59/60), tendência (mudança brusca e aproximação rápida), tempo do quadro e nome da origem, filtro de pedestres/bicicletas/parados na distância (inclusive o modo `so_alvo`), filtro de presença mínima de motos e as consultas do dashboard (inclusive o filtro por vídeo) (testadas com sqlite como substituto portável do Postgres). Veja `TESTES.md` para o guia completo, incluindo os testes manuais que precisam do YOLO/vídeo real.
 
 ## Validação com vídeo real
 

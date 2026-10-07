@@ -241,3 +241,40 @@ def test_processar_frame_so_alvo_moto_enxerga_carro_parado(main_mod, monkeypatch
     dist = _rodar_cena_com_carro_parado(main_mod, monkeypatch, "so_alvo")
     assert dist[2] is not None and dist[2] > 0
     assert dist[1] is None  # o carro parado continua sem evento para si
+
+
+# ---- distância em pixels (sem calibração) não vira evento ----
+
+def _cena_dois_veiculos_proximos(main_mod, monkeypatch, escala, H_chao=None, dx=15.0):
+    """Dois carros com centros a `dx` px um do outro (padrão 15 px = 1,5 m se a escala for 0,1 m/px)."""
+    frame = np.zeros((720, 1280, 3), dtype="uint8")
+
+    def detector_falso(_frame, _model):
+        a = {"track_id": 1, "vehicle_type": "car", "confidence": 0.9,
+             "x": 500.0, "y": 300.0, "bbox": (480, 280, 520, 320)}
+        b = {"track_id": 2, "vehicle_type": "car", "confidence": 0.9,
+             "x": 500.0 + dx, "y": 300.0, "bbox": (480 + dx, 280, 520 + dx, 320)}
+        return [a, b], None
+
+    monkeypatch.setattr(main_mod, "detectar_e_rastrear", detector_falso)
+    saida = main_mod.processar_frame(frame, None, T0, main_mod.novo_estado(), escala, [], H_chao=H_chao)
+    return saida[4], saida[5]  # entradas (eventos), analises
+
+
+def test_sem_calibracao_distancia_em_pixels_nao_gera_proximidade(main_mod, monkeypatch):
+    # 1,5 PIXEL: abaixo do limiar de 2,0 se (erradamente) fosse lido como metros
+    eventos, analises = _cena_dois_veiculos_proximos(main_mod, monkeypatch, escala=None, dx=1.5)
+    assert "proximidade_perigosa" not in {e["event_type"] for e in eventos}
+    assert all(a["risk_score"] == 0 for a in analises)
+
+
+def test_com_escala_simples_a_proximidade_e_avaliada(main_mod, monkeypatch):
+    eventos, _ = _cena_dois_veiculos_proximos(main_mod, monkeypatch, escala=0.1)  # 15 px = 1,5 m
+    assert "proximidade_perigosa" in {e["event_type"] for e in eventos}
+
+
+def test_com_homografia_a_proximidade_e_avaliada(main_mod, monkeypatch):
+    # homografia trivial: 1 px = 0,1 m no chão (ponto de contato = base da caixa)
+    H = np.diag([0.1, 0.1, 1.0])
+    eventos, _ = _cena_dois_veiculos_proximos(main_mod, monkeypatch, escala=None, H_chao=H)
+    assert "proximidade_perigosa" in {e["event_type"] for e in eventos}

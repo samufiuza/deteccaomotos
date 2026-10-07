@@ -245,8 +245,10 @@ def processar_frame(frame, model, ts, estado, escala, zonas, H_chao=None, parado
         estado["historico_distancias"], escala_calculo, ts,
     )
     zonas_atuais, entradas_zona = atualizar_zonas(objetos, zonas, estado["zona_por_track"], ts)
+    # sem calibração a distância está em pixels e não pode ser comparada ao limiar em metros
     analises, entradas_condicoes = calcular_riscos(
-        objetos, velocidades, distancias, zonas_atuais, estado["condicoes"], tendencias, ts
+        objetos, velocidades, distancias, zonas_atuais, estado["condicoes"], tendencias, ts,
+        distancia_em_metros=(escala is not None or H_chao is not None),
     )
     entradas = entradas_zona + entradas_condicoes
 
