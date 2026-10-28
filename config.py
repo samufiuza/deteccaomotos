@@ -131,3 +131,10 @@ NIVEIS_RISCO = [
 # ao rodar com vídeo real: sem esse filtro, IDs que aparecem em 1 frame só
 # (falso positivo pontual ou troca de ID) inflam a contagem total de motos.
 MIN_FRAMES_PRESENCA_MOTO = int(os.environ.get("MIN_FRAMES_PRESENCA_MOTO", 3))
+
+# Risco só para o alvo do estudo (motocicletas).
+# Carros, ônibus e caminhões continuam sendo detectados e rastreados, e continuam
+# valendo como "vizinhos" no cálculo de distância (uma moto colada num caminhão é
+# risco), mas não geram eventos nem score para si. Para voltar ao comportamento
+# anterior (risco para todos os veículos): RISCO_SOMENTE_ALVO=0.
+RISCO_SOMENTE_ALVO = os.environ.get("RISCO_SOMENTE_ALVO", "1").strip().lower() not in ("0", "false", "nao", "não")
