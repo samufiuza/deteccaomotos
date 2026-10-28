@@ -246,11 +246,13 @@ def test_processar_frame_so_alvo_moto_enxerga_carro_parado(main_mod, monkeypatch
 # ---- distância em pixels (sem calibração) não vira evento ----
 
 def _cena_dois_veiculos_proximos(main_mod, monkeypatch, escala, H_chao=None, dx=15.0):
-    """Dois carros com centros a `dx` px um do outro (padrão 15 px = 1,5 m se a escala for 0,1 m/px)."""
+    """Uma moto e um carro com centros a `dx` px um do outro (padrão 15 px = 1,5 m se a escala for 0,1 m/px).
+
+    O alvo do risco é a moto (config.RISCO_SOMENTE_ALVO); o carro entra como vizinho."""
     frame = np.zeros((720, 1280, 3), dtype="uint8")
 
     def detector_falso(_frame, _model):
-        a = {"track_id": 1, "vehicle_type": "car", "confidence": 0.9,
+        a = {"track_id": 1, "vehicle_type": "motorcycle", "confidence": 0.9,
              "x": 500.0, "y": 300.0, "bbox": (480, 280, 520, 320)}
         b = {"track_id": 2, "vehicle_type": "car", "confidence": 0.9,
              "x": 500.0 + dx, "y": 300.0, "bbox": (480 + dx, 280, 520 + dx, 320)}
