@@ -29,6 +29,7 @@ from config import (
     LIMIAR_APROXIMACAO_M_S,
     CLASSES_IGNORADAS_DISTANCIA,
     RISCO_SOMENTE_ALVO,
+    COOLDOWN_EVENTO_S,
     LIMIAR_PARADO_KMH,
     LIMIAR_PARADO_PX_S,
     MIN_PONTOS_PARADO,
@@ -204,6 +205,12 @@ def calcular_tendencias(objetos, historico, distancias, vizinhos, historico_dist
     return tendencias
 
 
+def _segundos_entre(ts_a, ts_b):
+    """Diferença ts_a - ts_b em segundos; aceita datetime ou número (segundos)."""
+    delta = ts_a - ts_b
+    return delta.total_seconds() if hasattr(delta, "total_seconds") else float(delta)
+
+
 def _gera_risco(obj, somente_alvo):
     """Só motocicletas geram score/eventos quando somente_alvo=True (veja config.RISCO_SOMENTE_ALVO)."""
     # objeto sem tipo informado não é descartado (compatível com quem chama sem classe)
@@ -251,7 +258,8 @@ def atualizar_zonas(objetos, zonas, zona_por_track, ts=None, somente_alvo=None):
 
 
 def calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado_condicoes,
-                    tendencias=None, ts=None, distancia_em_metros=True, somente_alvo=None):
+                    tendencias=None, ts=None, distancia_em_metros=True, somente_alvo=None,
+                    cooldown_s=None):
     """
     Para cada objeto rastreado: detecta as condições de risco ativas AGORA
     (velocidade elevada, proximidade perigosa, zona de risco, mudança brusca,
@@ -264,6 +272,7 @@ def calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado_condi
         entre chamadas.
     tendencias: saída de calcular_tendencias (opcional).
     ts: tempo do quadro (padrão: datetime.now()).
+    cooldown_s: intervalo mínimo entre eventos do mesmo tipo e veículo (padrão: config.COOLDOWN_EVENTO_S).
     somente_alvo: True = só motocicletas geram análise/evento (padrão: config.RISCO_SOMENTE_ALVO).
     distancia_em_metros: False quando não há calibração (a distância está em
         pixels). Pixels não são comparáveis ao limiar em metros, então nesse caso
@@ -278,6 +287,10 @@ def calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado_condi
             EVENTOS_TRANSICAO).
     """
     somente_alvo = RISCO_SOMENTE_ALVO if somente_alvo is None else somente_alvo
+    cooldown_s = COOLDOWN_EVENTO_S if cooldown_s is None else cooldown_s
+    # último instante em que cada (track, tipo) gerou evento; guardado no mesmo
+    # dict de estado, sob uma chave que não colide com track_id
+    ultimos = estado_condicoes.setdefault("__ultimo_evento__", {})
     analises = []
     eventos_transicao = []
     ts = ts if ts is not None else datetime.now()
@@ -315,6 +328,11 @@ def calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado_condi
         for tipo_evento in EVENTOS_TRANSICAO:
             ativo_agora = tipo_evento in eventos_ativos
             if ativo_agora and not estado_anterior.get(tipo_evento, False):
+                ultimo = ultimos.get((tid, tipo_evento))
+                if ultimo is not None and cooldown_s > 0 and _segundos_entre(ts, ultimo) < cooldown_s:
+                    estado_anterior[tipo_evento] = ativo_agora
+                    continue
+                ultimos[(tid, tipo_evento)] = ts
                 eventos_transicao.append({
                     "track_id": tid,
                     "event_type": tipo_evento,

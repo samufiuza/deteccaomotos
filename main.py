@@ -29,7 +29,9 @@ from datetime import datetime
 import cv2
 import numpy as np
 
+import config
 import db
+import state as modulo_state
 from detector import carregar_modelo, detectar_e_rastrear
 from calibration import parse_calibracao, carregar_calibracao, reescalar_homografia, projetar_objetos
 from fonte import eh_fonte_ao_vivo, nome_origem, fps_valido, timestamp_do_quadro
@@ -79,6 +81,11 @@ def parse_args():
         help="Papel dos objetos parados no cálculo de distância: 'alvo_e_vizinho' (ficam fora "
              "nos dois papéis) ou 'so_alvo' (não geram evento para si, mas contam como vizinho "
              f"de quem se move). Padrão: {PARADOS_NA_DISTANCIA} (config.PARADOS_NA_DISTANCIA)"
+    )
+    parser.add_argument(
+        "--limiar-velocidade", type=float, default=None,
+        help="Velocidade (km/h) acima da qual há 'velocidade_elevada'. Use o limite da via "
+             f"(ex.: 110 em rodovia). Padrão: {config.LIMIAR_VELOCIDADE_KMH:g} (config.LIMIAR_VELOCIDADE_KMH)"
     )
     parser.add_argument(
         "--no-display", action="store_true",
@@ -131,6 +138,11 @@ def parse_args():
     zonas = carregar_zonas(args.zonas)
     if not zonas:
         print("⚠️  Sem zonas de risco configuradas (--zonas não informado).")
+    if args.limiar_velocidade is not None:
+        if args.limiar_velocidade <= 0:
+            parser.error("--limiar-velocidade deve ser maior que zero.")
+        modulo_state.LIMIAR_VELOCIDADE_KMH = args.limiar_velocidade
+    print(f"ℹ️  Limiar de velocidade elevada: {modulo_state.LIMIAR_VELOCIDADE_KMH:g} km/h")
     parados = args.parados or PARADOS_NA_DISTANCIA
     print(f"ℹ️  Objetos parados na distância: {parados}")
     origem = nome_origem(source, args.origem)

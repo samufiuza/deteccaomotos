@@ -25,25 +25,26 @@ def test_track_id_none_e_ignorado():
 
 
 def test_evento_velocidade_gerado_so_na_entrada():
+    # cooldown_s=0: testa só a regra de transição (o cooldown tem testes próprios)
     objetos = [{"track_id": 1}]
     zonas_atuais = {1: None}
     estado = {}
 
     # frame 1: velocidade acima do limiar -> evento
-    _, eventos1 = calcular_riscos(objetos, {1: 80}, {1: 10}, zonas_atuais, estado)
+    _, eventos1 = calcular_riscos(objetos, {1: 80}, {1: 10}, zonas_atuais, estado, cooldown_s=0)
     assert len(eventos1) == 1
     assert eventos1[0]["event_type"] == "velocidade_elevada"
 
     # frame 2: continua acima do limiar -> NÃO deve duplicar
-    _, eventos2 = calcular_riscos(objetos, {1: 85}, {1: 10}, zonas_atuais, estado)
+    _, eventos2 = calcular_riscos(objetos, {1: 85}, {1: 10}, zonas_atuais, estado, cooldown_s=0)
     assert len(eventos2) == 0
 
     # frame 3: volta a ficar abaixo do limiar
-    _, eventos3 = calcular_riscos(objetos, {1: 40}, {1: 10}, zonas_atuais, estado)
+    _, eventos3 = calcular_riscos(objetos, {1: 40}, {1: 10}, zonas_atuais, estado, cooldown_s=0)
     assert len(eventos3) == 0
 
     # frame 4: sobe de novo -> nova entrada, novo evento
-    _, eventos4 = calcular_riscos(objetos, {1: 90}, {1: 10}, zonas_atuais, estado)
+    _, eventos4 = calcular_riscos(objetos, {1: 90}, {1: 10}, zonas_atuais, estado, cooldown_s=0)
     assert len(eventos4) == 1
 
 

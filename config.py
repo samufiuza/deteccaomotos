@@ -138,3 +138,10 @@ MIN_FRAMES_PRESENCA_MOTO = int(os.environ.get("MIN_FRAMES_PRESENCA_MOTO", 3))
 # risco), mas não geram eventos nem score para si. Para voltar ao comportamento
 # anterior (risco para todos os veículos): RISCO_SOMENTE_ALVO=0.
 RISCO_SOMENTE_ALVO = os.environ.get("RISCO_SOMENTE_ALVO", "1").strip().lower() not in ("0", "false", "nao", "não")
+
+# Intervalo mínimo (s) entre dois eventos do MESMO tipo para o MESMO veículo.
+# A condição de risco pode ligar e desligar a cada poucos quadros (oscilação do
+# rastreamento, velocidade perto do limiar); sem isso, um único episódio vira
+# dezenas de eventos. O score por quadro (analise_risco) não é afetado.
+# 0 desliga (um evento a cada transição, como antes).
+COOLDOWN_EVENTO_S = float(os.environ.get("COOLDOWN_EVENTO_S", 2.0))
