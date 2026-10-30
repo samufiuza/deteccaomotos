@@ -38,6 +38,8 @@ from fonte import eh_fonte_ao_vivo, nome_origem, fps_valido, timestamp_do_quadro
 from state import (
     atualizar_historico_e_calcular,
     atualizar_zonas,
+    calcular_previsoes,
+    avaliar_predicao,
     calcular_riscos,
     calcular_tendencias,
     atualizar_presenca_motos,
@@ -45,7 +47,9 @@ from state import (
 from config import (
     HISTORICO_MAX_POSICOES, MIN_FRAMES_PRESENCA_MOTO, FPS_PADRAO,
     MODOS_PARADOS, PARADOS_NA_DISTANCIA,
+    PREDICAO_ATIVA, HORIZONTE_PREDICAO_S, RISCO_SOMENTE_ALVO,
 )
+from predicao import AvaliadorPredicao
 
 JANELA_VIDEO = "Deteccao - Video/Webcam"
 JANELA_IMAGEM = "Deteccao - Imagem"
@@ -207,6 +211,7 @@ def novo_estado():
         "historico_distancias": defaultdict(lambda: deque(maxlen=HISTORICO_MAX_POSICOES)),
         "zona_por_track": {},
         "condicoes": {},
+        "avaliador_predicao": AvaliadorPredicao(HORIZONTE_PREDICAO_S),
     }
 
 
@@ -256,11 +261,21 @@ def processar_frame(frame, model, ts, estado, escala, zonas, H_chao=None, parado
         objetos, estado["historico"], distancias, vizinhos,
         estado["historico_distancias"], escala_calculo, ts,
     )
+    # predição de curto prazo (só com posições em metros); não entra no score
+    previsoes, cinematica = {}, {}
+    if PREDICAO_ATIVA and (H_chao is not None or escala is not None):
+        previsoes, cinematica = calcular_previsoes(
+            objetos, estado["historico"], escala_calculo, ts, parados_na_distancia=parados_na_distancia
+        )
+        alvos = [o["track_id"] for o in objetos
+                 if o["track_id"] is not None and (not RISCO_SOMENTE_ALVO or o.get("vehicle_type") == "motorcycle")]
+        avaliar_predicao(estado["avaliador_predicao"], cinematica, ts, alvos)
     zonas_atuais, entradas_zona = atualizar_zonas(objetos, zonas, estado["zona_por_track"], ts)
     # sem calibração a distância está em pixels e não pode ser comparada ao limiar em metros
     analises, entradas_condicoes = calcular_riscos(
         objetos, velocidades, distancias, zonas_atuais, estado["condicoes"], tendencias, ts,
         distancia_em_metros=(escala is not None or H_chao is not None),
+        previsoes=previsoes,
     )
     entradas = entradas_zona + entradas_condicoes
 
@@ -402,6 +417,8 @@ def main():
 
         salvar(forcar=True)  # flush final
 
+        if PREDICAO_ATIVA:
+            print(estado["avaliador_predicao"].texto_resumo())
         print(f"💾 Total de motos confirmadas (>= {MIN_FRAMES_PRESENCA_MOTO} quadros de presença): "
               f"{len(motos_confirmadas)}")
 

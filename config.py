@@ -145,3 +145,15 @@ RISCO_SOMENTE_ALVO = os.environ.get("RISCO_SOMENTE_ALVO", "1").strip().lower() n
 # dezenas de eventos. O score por quadro (analise_risco) não é afetado.
 # 0 desliga (um evento a cada transição, como antes).
 COOLDOWN_EVENTO_S = float(os.environ.get("COOLDOWN_EVENTO_S", 2.0))
+
+# ==== PREDIÇÃO DE CURTO PRAZO ====
+# Projeta a posição dos veículos para os próximos HORIZONTE_PREDICAO_S segundos
+# (movimento uniforme) e gera "proximidade_prevista" quando a menor distância
+# prevista cai abaixo de LIMIAR_DISTANCIA_MINIMA_M e a distância atual ainda está
+# acima. O evento NÃO entra no score (decisão: avaliar com o gabarito antes).
+# PREDICAO_ATIVA=0 desliga a predição.
+PREDICAO_ATIVA = os.environ.get("PREDICAO_ATIVA", "1").strip().lower() not in ("0", "false", "nao", "não")
+HORIZONTE_PREDICAO_S = float(os.environ.get("HORIZONTE_PREDICAO_S", 2.0))
+# Pontos recentes usados na regressão da velocidade vetorial (<= HISTORICO_MAX_POSICOES)
+PREDICAO_JANELA_PONTOS = int(os.environ.get("PREDICAO_JANELA_PONTOS", 15))
+PREDICAO_MIN_PONTOS = int(os.environ.get("PREDICAO_MIN_PONTOS", 8))

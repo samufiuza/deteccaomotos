@@ -8,6 +8,11 @@ dependências pesadas.
 
 from datetime import datetime
 
+from predicao import (
+    estimar_velocidade_vetorial,
+    menor_distancia_prevista,
+    posicao_atual_m,
+)
 from risk import (
     calcular_velocidade,
     calcular_distancia,
@@ -30,6 +35,10 @@ from config import (
     CLASSES_IGNORADAS_DISTANCIA,
     RISCO_SOMENTE_ALVO,
     COOLDOWN_EVENTO_S,
+    PREDICAO_ATIVA,
+    HORIZONTE_PREDICAO_S,
+    PREDICAO_JANELA_PONTOS,
+    PREDICAO_MIN_PONTOS,
     LIMIAR_PARADO_KMH,
     LIMIAR_PARADO_PX_S,
     MIN_PONTOS_PARADO,
@@ -44,6 +53,7 @@ EVENTOS_TRANSICAO = (
     "proximidade_perigosa",
     "mudanca_brusca",
     "aproximacao_rapida",
+    "proximidade_prevista",   # predição; não entra no score (ver config, PREDICAO_*)
 )
 
 
@@ -205,6 +215,85 @@ def calcular_tendencias(objetos, historico, distancias, vizinhos, historico_dist
     return tendencias
 
 
+def calcular_previsoes(objetos, historico, escala, ts, parados_na_distancia=None,
+                       horizonte_s=None, limiar_m=None, somente_alvo=None):
+    """
+    Predição de curto prazo: para cada alvo (moto, ver RISCO_SOMENTE_ALVO), projeta
+    a posição dele e dos vizinhos elegíveis (mesmos papéis do cálculo de distância)
+    para os próximos `horizonte_s` segundos, com movimento uniforme, e procura a
+    menor distância prevista.
+
+    Retorna ({track_id: {...}}, {track_id: {"pos", "vel"}}):
+      - previsões: só para quem tem aproximação PREVISTA, isto é, menor distância
+        prevista < limiar e distância atual >= limiar (se já está abaixo, é
+        proximidade_perigosa, não predição). Campos: distancia_prevista,
+        tempo_ate_s, vizinho, distancia_atual.
+      - cinematica: posição (m) e velocidade vetorial (m/s) de cada alvo com
+        histórico suficiente (usada pelo AvaliadorPredicao).
+    `escala` deve estar em metros (1.0 no plano do chão). Sem calibração: ({}, {}).
+    """
+    if escala is None:
+        return {}, {}
+    modo = PARADOS_NA_DISTANCIA if parados_na_distancia is None else parados_na_distancia
+    horizonte_s = HORIZONTE_PREDICAO_S if horizonte_s is None else horizonte_s
+    limiar_m = LIMIAR_DISTANCIA_MINIMA_M if limiar_m is None else limiar_m
+    somente_alvo = RISCO_SOMENTE_ALVO if somente_alvo is None else somente_alvo
+
+    cinematica = {}
+    for obj in objetos:
+        tid = obj["track_id"]
+        if tid is None or tid not in historico:
+            continue
+        hist = historico[tid]
+        if not hist or hist[-1]["timestamp"] != ts:
+            continue  # sem posição neste quadro (ex.: sem projeção)
+        vel = estimar_velocidade_vetorial(
+            hist, escala, janela=PREDICAO_JANELA_PONTOS, min_pontos=PREDICAO_MIN_PONTOS
+        )
+        if vel is None:
+            continue
+        cinematica[tid] = {"pos": posicao_atual_m(hist, escala), "vel": vel}
+
+    previsoes = {}
+    for obj_a in objetos:
+        ta = obj_a["track_id"]
+        if ta not in cinematica or not _gera_risco(obj_a, somente_alvo):
+            continue
+        e_alvo, _ = papeis_na_distancia(obj_a, historico, escala, modo)
+        if not e_alvo:
+            continue
+        a = cinematica[ta]
+        melhor = None
+        for obj_b in objetos:
+            tb = obj_b["track_id"]
+            if tb == ta or tb not in cinematica:
+                continue
+            _, pode_ser_vizinho = papeis_na_distancia(obj_b, historico, escala, modo)
+            if not pode_ser_vizinho:
+                continue
+            b = cinematica[tb]
+            d_atual = ((a["pos"][0] - b["pos"][0]) ** 2 + (a["pos"][1] - b["pos"][1]) ** 2) ** 0.5
+            d_prev, t_prev = menor_distancia_prevista(a["pos"], a["vel"], b["pos"], b["vel"], horizonte_s)
+            if d_atual >= limiar_m > d_prev and (melhor is None or d_prev < melhor["distancia_prevista"]):
+                melhor = {"distancia_prevista": d_prev, "tempo_ate_s": t_prev,
+                          "vizinho": tb, "distancia_atual": d_atual}
+        if melhor is not None:
+            previsoes[ta] = melhor
+    return previsoes, cinematica
+
+
+def avaliar_predicao(avaliador, cinematica, ts, alvos_ids):
+    """
+    Alimenta o AvaliadorPredicao: confere previsões vencidas contra as posições
+    de agora e registra as novas (só dos ids em `alvos_ids`).
+    """
+    avaliador.conferir(ts, {tid: c["pos"] for tid, c in cinematica.items()})
+    for tid in alvos_ids:
+        c = cinematica.get(tid)
+        if c is not None:
+            avaliador.registrar(ts, tid, c["pos"], c["vel"])
+
+
 def _segundos_entre(ts_a, ts_b):
     """Diferença ts_a - ts_b em segundos; aceita datetime ou número (segundos)."""
     delta = ts_a - ts_b
@@ -259,7 +348,7 @@ def atualizar_zonas(objetos, zonas, zona_por_track, ts=None, somente_alvo=None):
 
 def calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado_condicoes,
                     tendencias=None, ts=None, distancia_em_metros=True, somente_alvo=None,
-                    cooldown_s=None):
+                    cooldown_s=None, previsoes=None):
     """
     Para cada objeto rastreado: detecta as condições de risco ativas AGORA
     (velocidade elevada, proximidade perigosa, zona de risco, mudança brusca,
@@ -272,6 +361,8 @@ def calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado_condi
         entre chamadas.
     tendencias: saída de calcular_tendencias (opcional).
     ts: tempo do quadro (padrão: datetime.now()).
+    previsoes: saída de calcular_previsoes (1º item); gera o evento "proximidade_prevista",
+        que NÃO entra no score.
     cooldown_s: intervalo mínimo entre eventos do mesmo tipo e veículo (padrão: config.COOLDOWN_EVENTO_S).
     somente_alvo: True = só motocicletas geram análise/evento (padrão: config.RISCO_SOMENTE_ALVO).
     distancia_em_metros: False quando não há calibração (a distância está em
@@ -290,6 +381,7 @@ def calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado_condi
     cooldown_s = COOLDOWN_EVENTO_S if cooldown_s is None else cooldown_s
     # último instante em que cada (track, tipo) gerou evento; guardado no mesmo
     # dict de estado, sob uma chave que não colide com track_id
+    previsoes = previsoes or {}
     ultimos = estado_condicoes.setdefault("__ultimo_evento__", {})
     analises = []
     eventos_transicao = []
@@ -325,15 +417,17 @@ def calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado_condi
         # transições (debounce) — zona já é tratada em atualizar_zonas,
         # que sabe o NOME da zona
         estado_anterior = estado_condicoes.setdefault(tid, {})
+        previsao = previsoes.get(tid)
+        ativos_evento = list(eventos_ativos) + (["proximidade_prevista"] if previsao else [])
         for tipo_evento in EVENTOS_TRANSICAO:
-            ativo_agora = tipo_evento in eventos_ativos
+            ativo_agora = tipo_evento in ativos_evento
             if ativo_agora and not estado_anterior.get(tipo_evento, False):
                 ultimo = ultimos.get((tid, tipo_evento))
                 if ultimo is not None and cooldown_s > 0 and _segundos_entre(ts, ultimo) < cooldown_s:
                     estado_anterior[tipo_evento] = ativo_agora
                     continue
                 ultimos[(tid, tipo_evento)] = ts
-                eventos_transicao.append({
+                evento = {
                     "track_id": tid,
                     "event_type": tipo_evento,
                     "timestamp": ts,
@@ -341,7 +435,14 @@ def calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado_condi
                     "speed_estimated": velocidade,
                     "distance": distancia,
                     "zona": zona,
-                })
+                }
+                if tipo_evento == "proximidade_prevista":
+                    # distance = menor distância PREVISTA (m); o tempo até ela e o
+                    # vizinho vão como campos extras (o banco só grava os conhecidos)
+                    evento["distance"] = previsao["distancia_prevista"]
+                    evento["tempo_ate_s"] = previsao["tempo_ate_s"]
+                    evento["vizinho"] = previsao["vizinho"]
+                eventos_transicao.append(evento)
             estado_anterior[tipo_evento] = ativo_agora
 
     return analises, eventos_transicao
