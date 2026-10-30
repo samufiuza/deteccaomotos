@@ -230,5 +230,5 @@ def test_main_gera_evento_prevista_e_mede_erro(main_mod, monkeypatch):
         tipos += [(e["event_type"], e["track_id"]) for e in saida[4]]
     assert ("proximidade_prevista", 1) in tipos
     assert ("proximidade_prevista", 2) not in tipos       # risco só para a moto
-    r = estado["avaliador_predicao"].resumo()["todos"]
+    r = estado["avaliadores_predicao"][2.0].resumo()["todos"]
     assert r["n"] > 20 and r["erro_medio_m"] < 0.3

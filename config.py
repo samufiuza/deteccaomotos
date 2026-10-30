@@ -157,3 +157,8 @@ HORIZONTE_PREDICAO_S = float(os.environ.get("HORIZONTE_PREDICAO_S", 2.0))
 # Pontos recentes usados na regressão da velocidade vetorial (<= HISTORICO_MAX_POSICOES)
 PREDICAO_JANELA_PONTOS = int(os.environ.get("PREDICAO_JANELA_PONTOS", 15))
 PREDICAO_MIN_PONTOS = int(os.environ.get("PREDICAO_MIN_PONTOS", 8))
+# Horizontes (s) em que o erro de previsão é medido e impresso ao fim da rodada
+# (o horizonte do evento, HORIZONTE_PREDICAO_S, é sempre incluído).
+HORIZONTES_AVALIACAO_S = tuple(sorted({
+    float(h) for h in os.environ.get("HORIZONTES_AVALIACAO_S", "1.0,1.5,2.0").split(",") if h.strip()
+} | {HORIZONTE_PREDICAO_S}))
