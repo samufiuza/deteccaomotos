@@ -282,16 +282,19 @@ def calcular_previsoes(objetos, historico, escala, ts, parados_na_distancia=None
     return previsoes, cinematica
 
 
-def avaliar_predicao(avaliador, cinematica, ts, alvos_ids):
+def avaliar_predicao(avaliador, cinematica, ts, tipos_por_id):
     """
     Alimenta o AvaliadorPredicao: confere previsões vencidas contra as posições
-    de agora e registra as novas (só dos ids em `alvos_ids`).
+    de agora e registra as novas. `tipos_por_id`: {track_id: tipo} dos veículos
+    a avaliar. A avaliação usa TODOS os veículos (não só motos): motos ficam pouco
+    tempo no quadro e quase nunca duram o horizonte inteiro; o erro de previsão é
+    uma propriedade do movimento e da calibração, e o resumo separa as motos.
     """
     avaliador.conferir(ts, {tid: c["pos"] for tid, c in cinematica.items()})
-    for tid in alvos_ids:
+    for tid, tipo in tipos_por_id.items():
         c = cinematica.get(tid)
         if c is not None:
-            avaliador.registrar(ts, tid, c["pos"], c["vel"])
+            avaliador.registrar(ts, tid, c["pos"], c["vel"], tipo)
 
 
 def _segundos_entre(ts_a, ts_b):

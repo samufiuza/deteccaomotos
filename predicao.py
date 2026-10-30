@@ -99,15 +99,15 @@ class AvaliadorPredicao:
         self._pendentes = deque()   # (ts_alvo, tid, ts0, x0, y0, vx, vy)
         self.amostras = []          # dicts {erro_prev, erro_parado, vel, dist_prev}
 
-    def registrar(self, ts, tid, pos, vel):
+    def registrar(self, ts, tid, pos, vel, tipo=None):
         """Guarda a previsão feita no instante ts para ts + horizonte."""
         ts_alvo = ts + _como_delta(self.horizonte_s, ts)
-        self._pendentes.append((ts_alvo, tid, ts, pos[0], pos[1], vel[0], vel[1]))
+        self._pendentes.append((ts_alvo, tid, ts, pos[0], pos[1], vel[0], vel[1], tipo))
 
     def conferir(self, ts, posicoes):
         """posicoes: {track_id: (x_m, y_m)} no instante ts (quadro atual)."""
         while self._pendentes and _segundos(ts, self._pendentes[0][0]) >= 0:
-            ts_alvo, tid, ts0, x0, y0, vx, vy = self._pendentes.popleft()
+            ts_alvo, tid, ts0, x0, y0, vx, vy, tipo = self._pendentes.popleft()
             atraso = _segundos(ts, ts_alvo)
             real = posicoes.get(tid)
             if real is None or atraso > self.tolerancia_s:
@@ -119,6 +119,7 @@ class AvaliadorPredicao:
                 "erro_parado": math.hypot(real[0] - x0, real[1] - y0),
                 "vel": math.hypot(vx, vy),
                 "dist_prev": math.hypot(vx, vy) * dt,
+                "tipo": tipo,
             })
 
     def resumo(self):
@@ -138,14 +139,18 @@ class AvaliadorPredicao:
                 "erro_parado_medio_m": sum(p) / len(p),
             }
         mov = [a for a in self.amostras if a["vel"] >= self.vel_minima_m_s]
-        return {"horizonte_s": self.horizonte_s, "todos": estat(self.amostras), "em_movimento": estat(mov)}
+        motos = [a for a in self.amostras if a.get("tipo") == "motorcycle"]
+        return {"horizonte_s": self.horizonte_s, "todos": estat(self.amostras),
+                "em_movimento": estat(mov), "motos": estat(motos)}
 
     def texto_resumo(self):
         r = self.resumo()
         if not r["todos"]:
             return "Predição: nenhuma amostra avaliada (sem calibração, ou veículos rastreados por pouco tempo)."
         linhas = [f"Predição de posição a {self.horizonte_s:g} s — erro entre posição prevista e posição real:"]
-        for nome, chave in (("todos os alvos", "todos"), (f"em movimento (>= {self.vel_minima_m_s:g} m/s)", "em_movimento")):
+        for nome, chave in (("todos os veículos", "todos"),
+                            (f"veículos em movimento (>= {self.vel_minima_m_s:g} m/s)", "em_movimento"),
+                            ("motos", "motos")):
             e = r[chave]
             if e:
                 linhas.append(

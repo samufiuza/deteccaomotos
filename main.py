@@ -47,7 +47,7 @@ from state import (
 from config import (
     HISTORICO_MAX_POSICOES, MIN_FRAMES_PRESENCA_MOTO, FPS_PADRAO,
     MODOS_PARADOS, PARADOS_NA_DISTANCIA,
-    PREDICAO_ATIVA, HORIZONTE_PREDICAO_S, RISCO_SOMENTE_ALVO,
+    PREDICAO_ATIVA, HORIZONTE_PREDICAO_S, CLASSES_IGNORADAS_DISTANCIA,
 )
 from predicao import AvaliadorPredicao
 
@@ -267,9 +267,10 @@ def processar_frame(frame, model, ts, estado, escala, zonas, H_chao=None, parado
         previsoes, cinematica = calcular_previsoes(
             objetos, estado["historico"], escala_calculo, ts, parados_na_distancia=parados_na_distancia
         )
-        alvos = [o["track_id"] for o in objetos
-                 if o["track_id"] is not None and (not RISCO_SOMENTE_ALVO or o.get("vehicle_type") == "motorcycle")]
-        avaliar_predicao(estado["avaliador_predicao"], cinematica, ts, alvos)
+        # a medição do erro usa todos os veículos (pedestres e bicicletas ficam de fora)
+        tipos = {o["track_id"]: o["vehicle_type"] for o in objetos
+                 if o["track_id"] is not None and o["vehicle_type"] not in CLASSES_IGNORADAS_DISTANCIA}
+        avaliar_predicao(estado["avaliador_predicao"], cinematica, ts, tipos)
     zonas_atuais, entradas_zona = atualizar_zonas(objetos, zonas, estado["zona_por_track"], ts)
     # sem calibração a distância está em pixels e não pode ser comparada ao limiar em metros
     analises, entradas_condicoes = calcular_riscos(
