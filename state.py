@@ -297,6 +297,40 @@ def avaliar_predicao(avaliador, cinematica, ts, tipos_por_id):
             avaliador.registrar(ts, tid, c["pos"], c["vel"], tipo)
 
 
+def parse_faixa_analise(texto):
+    """
+    "x_min,x_max,y_min,y_max" (metros, no sistema da calibração) -> tupla de
+    floats. Levanta ValueError se o formato ou os limites forem inválidos.
+    """
+    try:
+        x0, x1, y0, y1 = (float(v) for v in str(texto).replace(";", ",").split(","))
+    except ValueError as e:
+        raise ValueError('formato esperado: "x_min,x_max,y_min,y_max" (metros)') from e
+    if not (x0 < x1 and y0 < y1):
+        raise ValueError("x_min < x_max e y_min < y_max são obrigatórios")
+    return x0, x1, y0, y1
+
+
+def filtrar_faixa_analise(objetos, faixa):
+    """
+    Mantém só os objetos cujo ponto de contato projetado (mx, my, em metros no
+    plano do chão) está dentro de `faixa` = (x_min, x_max, y_min, y_max).
+    Objetos sem projeção ficam de fora. Faixa None não filtra nada.
+
+    Serve para analisar só uma pista (ex.: a pista calibrada) e ignorar veículos
+    do outro sentido, que não têm calibração válida e distorceriam a distância
+    (um carro da pista vizinha não é "vizinho" de uma moto desta pista).
+    """
+    if faixa is None:
+        return objetos
+    x0, x1, y0, y1 = faixa
+    return [
+        o for o in objetos
+        if o.get("mx") is not None and o.get("my") is not None
+        and x0 <= o["mx"] <= x1 and y0 <= o["my"] <= y1
+    ]
+
+
 def _segundos_entre(ts_a, ts_b):
     """Diferença ts_a - ts_b em segundos; aceita datetime ou número (segundos)."""
     delta = ts_a - ts_b

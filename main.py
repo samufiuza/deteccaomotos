@@ -41,6 +41,8 @@ from state import (
     calcular_previsoes,
     avaliar_predicao,
     calcular_riscos,
+    filtrar_faixa_analise,
+    parse_faixa_analise,
     calcular_tendencias,
     atualizar_presenca_motos,
 )
@@ -50,6 +52,10 @@ from config import (
     PREDICAO_ATIVA, HORIZONTE_PREDICAO_S, HORIZONTES_AVALIACAO_S, CLASSES_IGNORADAS_DISTANCIA,
 )
 from predicao import AvaliadorPredicao
+
+# faixa de análise em metros (x_min, x_max, y_min, y_max) no sistema da calibração;
+# definida por --faixa-analise e usada em processar_frame (None = tudo)
+FAIXA_ANALISE = None
 
 JANELA_VIDEO = "Deteccao - Video/Webcam"
 JANELA_IMAGEM = "Deteccao - Imagem"
@@ -90,6 +96,12 @@ def parse_args():
         "--limiar-velocidade", type=float, default=None,
         help="Velocidade (km/h) acima da qual há 'velocidade_elevada'. Use o limite da via "
              f"(ex.: 110 em rodovia). Padrão: {config.LIMIAR_VELOCIDADE_KMH:g} (config.LIMIAR_VELOCIDADE_KMH)"
+    )
+    parser.add_argument(
+        "--faixa-analise", default=None, metavar="X_MIN,X_MAX,Y_MIN,Y_MAX",
+        help="Só analisa veículos cujo ponto de contato esteja nesta faixa do chão, em metros "
+             "no sistema da calibração (ex.: \"-3.8,3.8,-5,45\" para a pista calibrada e 45 m à "
+             "frente). Exige --calib-arquivo. Ignora a pista do outro sentido."
     )
     parser.add_argument(
         "--no-display", action="store_true",
@@ -142,6 +154,17 @@ def parse_args():
     zonas = carregar_zonas(args.zonas)
     if not zonas:
         print("⚠️  Sem zonas de risco configuradas (--zonas não informado).")
+    global FAIXA_ANALISE
+    FAIXA_ANALISE = None
+    if args.faixa_analise:
+        if calib_chao is None:
+            parser.error("--faixa-analise exige --calib-arquivo (homografia).")
+        try:
+            FAIXA_ANALISE = parse_faixa_analise(args.faixa_analise)
+        except ValueError as e:
+            parser.error(f"--faixa-analise inválida: {e}")
+        print(f"ℹ️  Faixa de análise (m): x {FAIXA_ANALISE[0]:g} a {FAIXA_ANALISE[1]:g}, "
+              f"y {FAIXA_ANALISE[2]:g} a {FAIXA_ANALISE[3]:g}; veículos fora dela são ignorados.")
     if args.limiar_velocidade is not None:
         if args.limiar_velocidade <= 0:
             parser.error("--limiar-velocidade deve ser maior que zero.")
@@ -251,6 +274,7 @@ def processar_frame(frame, model, ts, estado, escala, zonas, H_chao=None, parado
     escala_calculo = escala
     if H_chao is not None:
         projetar_objetos(objetos, H_chao)
+        objetos = filtrar_faixa_analise(objetos, FAIXA_ANALISE)
         escala_calculo = 1.0
 
     vizinhos = {}
