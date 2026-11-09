@@ -11,8 +11,8 @@ def test_score_e_calculado_por_track():
     analises, _ = calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado)
     por_track = {a["track_id"]: a for a in analises}
 
-    assert por_track[1]["risk_score"] == 30  # só velocidade_elevada
-    assert por_track[1]["risk_level"] == "medio"
+    assert por_track[1]["risk_score"] == 0  # velocidade_elevada tem peso 0 (ajuste do gabarito)
+    assert por_track[1]["risk_level"] == "baixo"  # velocidade_elevada tem peso 0
     assert por_track[2]["risk_score"] == 0
     assert por_track[2]["risk_level"] == "baixo"
 
@@ -64,7 +64,7 @@ def test_evento_proximidade_gerado_so_na_entrada():
 def test_score_combina_velocidade_e_proximidade():
     objetos = [{"track_id": 1}]
     analises, eventos = calcular_riscos(objetos, {1: 90}, {1: 0.5}, {1: None}, {})
-    assert analises[0]["risk_score"] == 55  # 30 + 25
+    assert analises[0]["risk_score"] == 40  # só proximidade_perigosa; velocidade tem peso 0
     assert analises[0]["risk_level"] == "medio"
     tipos = {e["event_type"] for e in eventos}
     assert tipos == {"velocidade_elevada", "proximidade_perigosa"}

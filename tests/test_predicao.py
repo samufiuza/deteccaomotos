@@ -13,6 +13,7 @@ from predicao import (
     menor_distancia_prevista,
     posicao_prevista,
 )
+from config import PESOS_RISCO
 from state import calcular_previsoes, calcular_riscos
 
 T0 = datetime(2026, 1, 1)
@@ -126,7 +127,7 @@ def test_sem_calibracao_nao_preve():
 
 # ---- evento e score ----
 
-def test_evento_proximidade_prevista_nao_muda_o_score():
+def test_evento_proximidade_prevista_entra_no_score():
     historico, ts = _cena(y_carro0=8.0)
     previsoes, _ = calcular_previsoes([MOTO, CARRO], historico, 1.0, ts)
     vel = {1: 21.6, 2: 7.2}
@@ -135,9 +136,9 @@ def test_evento_proximidade_prevista_nao_muda_o_score():
     assert len(prev) == 1 and prev[0]["track_id"] == 1
     assert prev[0]["distance"] == pytest.approx(previsoes[1]["distancia_prevista"])
     assert prev[0]["tempo_ate_s"] == pytest.approx(previsoes[1]["tempo_ate_s"])
-    # score igual ao de quem não tem predição
+    # a predição soma o peso de proximidade_prevista ao score de quem não tem predição
     analises_sem, _ = calcular_riscos([MOTO, CARRO], vel, {1: 8.0, 2: None}, {}, {}, ts=ts)
-    assert analises[0]["risk_score"] == analises_sem[0]["risk_score"]
+    assert analises[0]["risk_score"] == analises_sem[0]["risk_score"] + PESOS_RISCO["proximidade_prevista"]
 
 
 def test_evento_prevista_so_na_transicao():

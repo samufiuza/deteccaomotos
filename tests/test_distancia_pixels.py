@@ -14,7 +14,7 @@ def _riscos(distancia, em_metros):
 def test_distancia_em_metros_abaixo_do_limiar_gera_proximidade():
     analises, eventos = _riscos(1.5, True)
     assert [e["event_type"] for e in eventos] == ["proximidade_perigosa"]
-    assert analises[0]["risk_score"] == 25
+    assert analises[0]["risk_score"] == 40  # peso de proximidade_perigosa (ajuste do gabarito)
     assert eventos[0]["distance"] == 1.5
 
 

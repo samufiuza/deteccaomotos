@@ -56,17 +56,30 @@ HISTORICO_MAX_POSICOES = 15
 LIMIAR_VELOCIDADE_KMH = float(os.environ.get("LIMIAR_VELOCIDADE_KMH", 60))
 LIMIAR_DISTANCIA_MINIMA_M = float(os.environ.get("LIMIAR_DISTANCIA_MINIMA_M", 2.0))
 
-# Pesos por tipo de evento ativo (somados para compor o score, máx. 100).
-# Espelha a tabela conceitual do prompt mestre do TCC (seção 10).
-# Os cinco pesos somam exatamente 100: um veículo com todas as condições
-# ativas ao mesmo tempo atinge o score máximo.
+# Pesos por tipo de evento ativo (somados para compor o score, limitado a 100).
+# Ajustados com o gabarito dos vídeos A, B, S e L (ver avaliação experimental):
+#   - proximidade_perigosa / proximidade_prevista / aproximacao_rapida tiveram
+#     93% de precisão e carregam o score;
+#   - mudanca_brusca teve 38% e velocidade_elevada (limiar fixo) 12%: a primeira
+#     só reforça (peso baixo) e a segunda saiu do score (peso 0).
+# Com os níveis abaixo: proximidade_prevista sozinha = médio (30);
+# proximidade_perigosa sozinha = médio (40); perigosa + aproximação = alto (60).
 PESOS_RISCO = {
-    "velocidade_elevada": 30,
-    "proximidade_perigosa": 25,
+    "proximidade_perigosa": 40,
+    "proximidade_prevista": 30,
+    "aproximacao_rapida": 20,
     "zona_risco": 15,
-    "mudanca_brusca": 15,
-    "aproximacao_rapida": 15,
+    "mudanca_brusca": 10,
+    "velocidade_elevada": 0,
 }
+
+# Eventos que continuam sendo DETECTADOS (e contam no score conforme o peso),
+# mas NÃO geram registro na tabela de eventos: no gabarito eles produziram a
+# maior parte dos falsos alarmes (mudança brusca 20 de 30; velocidade 7 de 30).
+# Para voltar a registrá-los: EVENTOS_INFORMATIVOS="" (variável de ambiente).
+EVENTOS_INFORMATIVOS = tuple(
+    t for t in os.environ.get("EVENTOS_INFORMATIVOS", "velocidade_elevada,mudanca_brusca").split(",") if t
+)
 
 # ==== TENDÊNCIA (mudanca_brusca / aproximacao_rapida) ====
 # Ambos analisam a evolução ao longo dos últimos quadros, não só o atual,
@@ -151,7 +164,7 @@ COOLDOWN_EVENTO_S = float(os.environ.get("COOLDOWN_EVENTO_S", 2.0))
 # de ~1,6 m, abaixo do limiar de 2 m; a 2 s a mediana passa de 2 m — ver avaliação no TCC)
 # (movimento uniforme) e gera "proximidade_prevista" quando a menor distância
 # prevista cai abaixo de LIMIAR_DISTANCIA_MINIMA_M e a distância atual ainda está
-# acima. O evento NÃO entra no score (decisão: avaliar com o gabarito antes).
+# acima. O evento entra no score (peso em PESOS_RISCO), decisão tomada após avaliar com o gabarito (13 de 13 eventos marcados como risco real).
 # PREDICAO_ATIVA=0 desliga a predição.
 PREDICAO_ATIVA = os.environ.get("PREDICAO_ATIVA", "1").strip().lower() not in ("0", "false", "nao", "não")
 HORIZONTE_PREDICAO_S = float(os.environ.get("HORIZONTE_PREDICAO_S", 1.5))

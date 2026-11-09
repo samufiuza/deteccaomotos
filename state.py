@@ -27,6 +27,7 @@ from config import (
     LIMIAR_VELOCIDADE_KMH,
     LIMIAR_DISTANCIA_MINIMA_M,
     PESOS_RISCO,
+    EVENTOS_INFORMATIVOS,
     JANELA_TENDENCIA,
     LIMIAR_MUDANCA_DIRECAO_GRAUS,
     LIMIAR_ACELERACAO_M_S2,
@@ -53,7 +54,7 @@ EVENTOS_TRANSICAO = (
     "proximidade_perigosa",
     "mudanca_brusca",
     "aproximacao_rapida",
-    "proximidade_prevista",   # predição; não entra no score (ver config, PREDICAO_*)
+    "proximidade_prevista",   # predição; entra no score (ver config.PESOS_RISCO e PREDICAO_*)
 )
 
 
@@ -399,7 +400,7 @@ def calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado_condi
     tendencias: saída de calcular_tendencias (opcional).
     ts: tempo do quadro (padrão: datetime.now()).
     previsoes: saída de calcular_previsoes (1º item); gera o evento "proximidade_prevista",
-        que NÃO entra no score.
+        que entra no score (peso em config.PESOS_RISCO).
     cooldown_s: intervalo mínimo entre eventos do mesmo tipo e veículo (padrão: config.COOLDOWN_EVENTO_S).
     somente_alvo: True = só motocicletas geram análise/evento (padrão: config.RISCO_SOMENTE_ALVO).
     distancia_em_metros: False quando não há calibração (a distância está em
@@ -442,7 +443,10 @@ def calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado_condi
             velocidade_aproximacao=tendencia.get("velocidade_aproximacao"),
             limiar_aproximacao=LIMIAR_APROXIMACAO_M_S,
         )
-        score, nivel = calcular_score(eventos_ativos, PESOS_RISCO)
+        previsao = previsoes.get(tid)
+        # a predição entra no score como um evento ativo a mais
+        ativos_score = list(eventos_ativos) + (["proximidade_prevista"] if previsao else [])
+        score, nivel = calcular_score(ativos_score, PESOS_RISCO)
 
         analises.append({
             "track_id": tid,
@@ -454,9 +458,10 @@ def calcular_riscos(objetos, velocidades, distancias, zonas_atuais, estado_condi
         # transições (debounce) — zona já é tratada em atualizar_zonas,
         # que sabe o NOME da zona
         estado_anterior = estado_condicoes.setdefault(tid, {})
-        previsao = previsoes.get(tid)
-        ativos_evento = list(eventos_ativos) + (["proximidade_prevista"] if previsao else [])
+        ativos_evento = ativos_score
         for tipo_evento in EVENTOS_TRANSICAO:
+            if tipo_evento in EVENTOS_INFORMATIVOS:
+                continue   # detectado e usado no score, mas sem registro de evento
             ativo_agora = tipo_evento in ativos_evento
             if ativo_agora and not estado_anterior.get(tipo_evento, False):
                 ultimo = ultimos.get((tid, tipo_evento))

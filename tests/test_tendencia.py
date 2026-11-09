@@ -121,7 +121,7 @@ def test_aproximacao_abaixo_do_limiar_nao_ativa():
 
 
 def test_todas_as_condicoes_somam_100():
-    todos = ["velocidade_elevada", "proximidade_perigosa", "zona_risco", "mudanca_brusca", "aproximacao_rapida"]
+    todos = ["velocidade_elevada", "proximidade_perigosa", "proximidade_prevista", "zona_risco", "mudanca_brusca", "aproximacao_rapida"]
     assert calcular_score(todos, PESOS_RISCO) == (100, "alto")
 
 
